@@ -1,2 +1,2 @@
 # DeguMoni
-Degu's lifelog
+Degu's lifelog dashboard
