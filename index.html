@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>デグー環境モニタリングダッシュボード</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    function DeguMonitoringDashboard() {
+      const [data, setData] = useState([]);
+      const [latestData, setLatestData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [lastUpdate, setLastUpdate] = useState(null);
+      const [dataRange, setDataRange] = useState(100);
+      const [error, setError] = useState(null);
+      const [updateKey, setUpdateKey] = useState(0);
+
+      const CHANNEL_ID = '77767';
+      const READ_KEY = '73ff0a03269c1f35';
+
+      const fetchData = async () => {
+        try {
+          setError(null);
+          
+          // タイムスタンプで完全にキャッシュ回避
+          const timestamp = Date.now();
+          const random = Math.random().toString(36).substring(7);
+          const apiUrl = `https://ambidata.io/api/v2/channels/${CHANNEL_ID}/data?readKey=${READ_KEY}&n=${dataRange}&_t=${timestamp}&_r=${random}`;
+          
+          console.log('📄 データ取得開始:', new Date().toLocaleTimeString());
+          
+          const response = await fetch(apiUrl, {
+            method: 'GET',
+            mode: 'cors',
+            cache: 'no-store',
+            headers: {
+              'Accept': 'application/json'
+            }
+          });
+          
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          
+          const result = await response.json();
+          
+          if (result && result.length > 0) {
+            const sortedData = result.reverse();
+            
+            const formattedData = sortedData.map(item => ({
+              ...item,
+              time: new Date(item.created).toLocaleString('ja-JP', {
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+              }),
+              fullTime: new Date(item.created).toLocaleString('ja-JP')
+            }));
+            
+            setData([...formattedData]);
+            setLatestData({...formattedData[formattedData.length - 1]});
+            setLastUpdate(new Date());
+            setUpdateKey(prev => prev + 1);
+            console.log('✅ データ取得完了:', formattedData.length, '件');
+            console.log('📊 最新:', formattedData[formattedData.length - 1].fullTime);
+          }
+          setLoading(false);
+        } catch (error) {
+          console.error('❌ エラー:', error.message);
+          setError(error.message);
+          setLoading(false);
+        }
+      };
+
+      useEffect(() => {
+        fetchData();
+        console.log('⏰ 自動更新: 3分毎');
+        const interval = setInterval(() => {
+          console.log('🔄 自動更新実行');
+          fetchData();
+        }, 3 * 60 * 1000);
+        
+        return () => clearInterval(interval);
+      }, [dataRange]);
+
+      if (loading) {
+        return (
+          <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-indigo-600 mb-4">データ読み込み中...</div>
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
+            </div>
+          </div>
+        );
+      }
+
+      if (error) {
+        return (
+          <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+            <div className="bg-white rounded-lg shadow-lg p-8 max-w-md">
+              <div className="text-red-600 text-xl font-bold mb-4">⚠️ エラー</div>
+              <div className="text-gray-700 mb-4">{error}</div>
+              <div className="text-sm text-gray-500 mb-4">
+                ブラウザがAmbient APIへの直接アクセスをブロックしている可能性があります。
+              </div>
+              <button 
+                onClick={() => {
+                  setLoading(true);
+                  setError(null);
+                  fetchData();
+                }}
+                className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+              >
+                再試行
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div key={updateKey} className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+          <div className="max-w-7xl mx-auto">
+            {/* ヘッダー */}
+            <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                  <h1 className="text-3xl font-bold text-gray-800 mb-2">
+                    🐹 デグー環境モニタリング
+                  </h1>
+                  <p className="text-gray-600">チャンネル: DeguMoni_Integrated (ID: {CHANNEL_ID})</p>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm text-gray-500 mb-2">
+                    最終更新: {lastUpdate?.toLocaleString('ja-JP')}
+                  </div>
+                  <div className="text-xs text-gray-400 mb-2">
+                    次回更新: 3分後（自動）
+                  </div>
+                  <div className="flex gap-2">
+                    <select 
+                      value={dataRange}
+                      onChange={(e) => setDataRange(Number(e.target.value))}
+                      className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value={50}>50件</option>
+                      <option value={100}>100件</option>
+                      <option value={300}>300件</option>
+                      <option value={600}>600件</option>
+                    </select>
+                    <button
+                      onClick={() => {
+                        console.log('🔘 手動更新');
+                        fetchData();
+                      }}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                    >
+                      🔄 今すぐ更新
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 最新値表示 - 5つのボックス */}
+            {latestData && (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+                <div className="bg-white rounded-lg shadow p-4">
+                  <div className="text-sm text-gray-500 mb-1">温度</div>
+                  <div className="text-3xl font-bold text-orange-600">{latestData.d3}°C</div>
+                  <div className="text-xs text-gray-400 mt-1">THU-TEMP</div>
+                </div>
+                <div className="bg-white rounded-lg shadow p-4">
+                  <div className="text-sm text-gray-500 mb-1">湿度</div>
+                  <div className="text-3xl font-bold text-blue-600">{latestData.d4}%</div>
+                  <div className="text-xs text-gray-400 mt-1">THU-HUM</div>
+                </div>
+                <div className="bg-white rounded-lg shadow p-4">
+                  <div className="text-sm text-gray-500 mb-1">走行距離</div>
+                  <div className="text-3xl font-bold text-red-600">{latestData.d1}</div>
+                  <div className="text-xs text-gray-400 mt-1">ROT-ACUM</div>
+                </div>
+                <div className="bg-white rounded-lg shadow p-4">
+                  <div className="text-sm text-gray-500 mb-1">飲水累積</div>
+                  <div className="text-3xl font-bold text-cyan-600">{latestData.d6}</div>
+                  <div className="text-xs text-gray-400 mt-1">DRK-ACUM</div>
+                </div>
+                <div className="bg-white rounded-lg shadow p-4">
+                  <div className="text-sm text-gray-500 mb-1">SIT</div>
+                  <div className="text-3xl font-bold text-green-600">{latestData.d8}</div>
+                  <div className="text-xs text-gray-400 mt-1">KUSA-ACUM</div>
+                </div>
+              </div>
+            )}
+
+            {/* データサマリー */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-800">🌡️ 温湿度推移</h2>
+                <div className="space-y-3">
+                  <DataRow label="現在の温度" value={`${latestData?.d3}°C`} trend={calculateTrend(data, 'd3')} />
+                  <DataRow label="現在の湿度" value={`${latestData?.d4}%`} trend={calculateTrend(data, 'd4')} />
+                  <DataRow label="平均温度" value={`${calculateAverage(data, 'd3')}°C`} />
+                  <DataRow label="平均湿度" value={`${calculateAverage(data, 'd4')}%`} />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-800">🎡 活動サマリー</h2>
+                <div className="space-y-3">
+                  <DataRow label="回転速度" value={latestData?.d2} trend={calculateTrend(data, 'd2')} />
+                  <DataRow label="走行距離" value={latestData?.d1} />
+                  <DataRow label="飲水累積" value={latestData?.d6} />
+                  <DataRow label="SIT" value={latestData?.d8} />
+                </div>
+              </div>
+            </div>
+
+            {/* グラフエリア */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+              {/* 温湿度グラフ */}
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-800">📈 温度・湿度グラフ</h2>
+                <ChartComponent 
+                  data={data} 
+                  datasets={[
+                    { key: 'd3', label: '温度 (°C)', color: 'rgb(249, 115, 22)', yAxisID: 'y' },
+                    { key: 'd4', label: '湿度 (%)', color: 'rgb(59, 130, 246)', yAxisID: 'y1' }
+                  ]}
+                  dual={true}
+                />
+              </div>
+
+              {/* ROTグラフ */}
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-800">📈 回転活動グラフ</h2>
+                <ChartComponent 
+                  data={data} 
+                  datasets={[
+                    { key: 'd1', label: '走行距離', color: 'rgb(220, 38, 38)', yAxisID: 'y' },
+                    { key: 'd2', label: '回転速度', color: 'rgb(79, 70, 229)', yAxisID: 'y1' }
+                  ]}
+                  dual={true}
+                />
+              </div>
+
+              {/* DRKグラフ */}
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-800">📈 飲水累積グラフ</h2>
+                <ChartComponent 
+                  data={data} 
+                  datasets={[
+                    { key: 'd6', label: '飲水累積', color: 'rgb(6, 182, 212)', yAxisID: 'y' }
+                  ]}
+                  dual={false}
+                />
+              </div>
+
+              {/* SITグラフ */}
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-800">📈 SIT (She is there) グラフ</h2>
+                <ChartComponent 
+                  data={data} 
+                  datasets={[
+                    { key: 'd8', label: 'KUSA-ACUM', color: 'rgb(132, 204, 22)', yAxisID: 'y' }
+                  ]}
+                  dual={false}
+                />
+              </div>
+            </div>
+
+            {/* データテーブル */}
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              <h2 className="text-xl font-bold mb-4 text-gray-800">📊 最新データ（20件）</h2>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">時刻</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">温度</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">湿度</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">回転速度</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">走行距離</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">飲水</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">SIT</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {data.slice(-20).reverse().map((row, idx) => (
+                      <tr key={idx} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.time}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm font-semibold text-orange-600">{row.d3}°C</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm font-semibold text-blue-600">{row.d4}%</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d2}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d1}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d5}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d8}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="text-center mt-8 pb-4">
+              <p className="text-sm text-gray-600">
+                🔄 自動更新: 3分毎 | データ件数: {data.length}件
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Chart.jsコンポーネント
+    function ChartComponent({ data, datasets, dual }) {
+      const chartRef = useRef(null);
+      const chartInstance = useRef(null);
+
+      useEffect(() => {
+        if (!chartRef.current || !data || data.length === 0) return;
+
+        // 既存のチャートを破棄
+        if (chartInstance.current) {
+          chartInstance.current.destroy();
+        }
+
+        const ctx = chartRef.current.getContext('2d');
+
+        // データセットを準備
+        const chartDatasets = datasets.map(ds => ({
+          label: ds.label,
+          data: data.map(item => item[ds.key]),
+          borderColor: ds.color,
+          backgroundColor: ds.color.replace('rgb', 'rgba').replace(')', ', 0.1)'),
+          tension: 0.4,
+          yAxisID: ds.yAxisID
+        }));
+
+        // Y軸の設定
+        const scales = {
+          x: {
+            display: true,
+            ticks: {
+              maxRotation: 45,
+              minRotation: 45
+            }
+          },
+          y: {
+            type: 'linear',
+            display: true,
+            position: 'left'
+          }
+        };
+
+        if (dual) {
+          scales.y1 = {
+            type: 'linear',
+            display: true,
+            position: 'right',
+            grid: {
+              drawOnChartArea: false
+            }
+          };
+        }
+
+        chartInstance.current = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: data.map(item => item.time),
+            datasets: chartDatasets
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            aspectRatio: 2,
+            interaction: {
+              mode: 'index',
+              intersect: false
+            },
+            plugins: {
+              legend: {
+                display: true,
+                position: 'top'
+              }
+            },
+            scales: scales
+          }
+        });
+
+        return () => {
+          if (chartInstance.current) {
+            chartInstance.current.destroy();
+          }
+        };
+      }, [data, datasets, dual]);
+
+      return <canvas ref={chartRef}></canvas>;
+    }
+
+    function DataRow({ label, value, trend }) {
+      return (
+        <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+          <span className="text-sm font-medium text-gray-700">{label}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-bold text-gray-900">{value}</span>
+            {trend && (
+              <span className={`text-sm ${trend > 0 ? 'text-red-500' : 'text-blue-500'}`}>
+                {trend > 0 ? '↑' : '↓'}
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function calculateAverage(data, key) {
+      if (!data || data.length === 0) return '---';
+      const sum = data.reduce((acc, item) => acc + (parseFloat(item[key]) || 0), 0);
+      return (sum / data.length).toFixed(1);
+    }
+
+    function calculateTrend(data, key) {
+      if (!data || data.length < 10) return null;
+      const recent = data.slice(-5);
+      const previous = data.slice(-10, -5);
+      const recentAvg = recent.reduce((acc, item) => acc + (parseFloat(item[key]) || 0), 0) / 5;
+      const previousAvg = previous.reduce((acc, item) => acc + (parseFloat(item[key]) || 0), 0) / 5;
+      return recentAvg - previousAvg;
+    }
+
+    ReactDOM.render(<DeguMonitoringDashboard />, document.getElementById('root'));
+  </script>
+</body>
+</html>
