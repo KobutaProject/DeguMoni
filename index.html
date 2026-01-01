@@ -65,6 +65,10 @@
                 hour: '2-digit',
                 minute: '2-digit'
               }),
+              timeOnly: new Date(item.created).toLocaleString('ja-JP', {
+                hour: '2-digit',
+                minute: '2-digit'
+              }),
               fullTime: new Date(item.created).toLocaleString('ja-JP')
             }));
             
@@ -378,7 +382,7 @@
         chartInstance.current = new Chart(ctx, {
           type: 'line',
           data: {
-            labels: data.map(item => item.time),
+            labels: data.map(item => item.timeOnly),
             datasets: chartDatasets
           },
           options: {
@@ -393,6 +397,13 @@
               legend: {
                 display: true,
                 position: 'top'
+              },
+              tooltip: {
+                callbacks: {
+                  title: function(context) {
+                    return data[context[0].dataIndex].time;
+                  }
+                }
               }
             },
             scales: scales
