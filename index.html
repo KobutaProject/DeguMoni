@@ -25,19 +25,26 @@
       const [error, setError] = useState(null);
       const [updateKey, setUpdateKey] = useState(0);
 
+      // 健康記録関連のstate
+      const [healthRecords, setHealthRecords] = useState([]);
+      const [recordDate, setRecordDate] = useState(new Date().toISOString().split('T')[0]);
+      const [weight, setWeight] = useState('');
+      const [fecesCondition, setFecesCondition] = useState('');
+      const [memo, setMemo] = useState('');
+
       const CHANNEL_ID = '77767';
       const READ_KEY = '73ff0a03269c1f35';
+      const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbygafxILyUYiajSYjThZeIezQS5SLzodxgjkfnmRFcqBEUo_iRS4MCeSUmlHsvl8XinVw/exec';
 
       const fetchData = async () => {
         try {
           setError(null);
           
-          // タイムスタンプで完全にキャッシュ回避
           const timestamp = Date.now();
           const random = Math.random().toString(36).substring(7);
           const apiUrl = `https://ambidata.io/api/v2/channels/${CHANNEL_ID}/data?readKey=${READ_KEY}&n=${dataRange}&_t=${timestamp}&_r=${random}`;
           
-          console.log('📄 データ取得開始:', new Date().toLocaleTimeString());
+          console.log('🔄 データ取得開始:', new Date().toLocaleTimeString());
           
           const response = await fetch(apiUrl, {
             method: 'GET',
@@ -87,12 +94,62 @@
         }
       };
 
+      // 健康記録を取得
+      const fetchHealthRecords = async () => {
+        try {
+          const response = await fetch(GOOGLE_SCRIPT_URL);
+          const records = await response.json();
+          setHealthRecords(records);
+          console.log('✅ 健康記録取得:', records.length, '件');
+        } catch (error) {
+          console.error('❌ 健康記録取得エラー:', error);
+        }
+      };
+
+      // 健康記録を保存
+      const saveHealthRecord = async () => {
+        if (!weight) {
+          alert('体重を入力してください');
+          return;
+        }
+        
+        try {
+          const response = await fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              date: recordDate,
+              weight: parseFloat(weight),
+              fecesCondition: fecesCondition,
+              memo: memo
+            })
+          });
+          
+          alert('✅ 記録を保存しました！');
+          setWeight('');
+          setFecesCondition('');
+          setMemo('');
+          
+          // 再読み込み
+          setTimeout(() => fetchHealthRecords(), 1000);
+        } catch (error) {
+          console.error('❌ 保存エラー:', error);
+          alert('保存しました（no-corsモードのため確認不可）');
+          setTimeout(() => fetchHealthRecords(), 1000);
+        }
+      };
+
       useEffect(() => {
         fetchData();
+        fetchHealthRecords();
         console.log('⏰ 自動更新: 3分毎');
         const interval = setInterval(() => {
           console.log('🔄 自動更新実行');
           fetchData();
+          fetchHealthRecords();
         }, 3 * 60 * 1000);
         
         return () => clearInterval(interval);
@@ -167,6 +224,7 @@
                       onClick={() => {
                         console.log('🔘 手動更新');
                         fetchData();
+                        fetchHealthRecords();
                       }}
                       className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
                     >
@@ -175,6 +233,113 @@
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* 健康記録入力フォーム */}
+            <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+              <h2 className="text-xl font-bold mb-4 text-gray-800">📝 健康記録を追加</h2>
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    日付
+                  </label>
+                  <input 
+                    type="date" 
+                    value={recordDate}
+                    onChange={(e) => setRecordDate(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    体重 (g)
+                  </label>
+                  <input 
+                    type="number" 
+                    value={weight}
+                    onChange={(e) => setWeight(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="250"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    糞の状態
+                  </label>
+                  <select 
+                    value={fecesCondition}
+                    onChange={(e) => setFecesCondition(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                  >
+                    <option value="">選択してください</option>
+                    <option value="normal">正常</option>
+                    <option value="soft">軟便</option>
+                    <option value="hard">硬い</option>
+                    <option value="diarrhea">下痢</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    メモ
+                  </label>
+                  <input 
+                    type="text"
+                    value={memo}
+                    onChange={(e) => setMemo(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="気づいたことなど"
+                  />
+                </div>
+
+                <div className="flex items-end">
+                  <button
+                    onClick={saveHealthRecord}
+                    className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                  >
+                    💾 保存
+                  </button>
+                </div>
+              </div>
+
+              {/* 健康記録テーブル */}
+              {healthRecords.length > 0 && (
+                <div className="mt-6">
+                  <h3 className="text-lg font-bold mb-3 text-gray-800">📊 記録履歴（最新10件）</h3>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">日付</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">体重 (g)</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">糞の状態</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">メモ</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {healthRecords.slice(-10).reverse().map((record, idx) => (
+                          <tr key={idx} className="hover:bg-gray-50">
+                            <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">
+                              {new Date(record.date).toLocaleDateString('ja-JP')}
+                            </td>
+                            <td className="px-4 py-2 whitespace-nowrap text-sm font-semibold text-green-600">
+                              {record.weight}g
+                            </td>
+                            <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">
+                              {record.fecesCondition}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-gray-900">
+                              {record.memo}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* 最新値表示 - 5つのボックス */}
@@ -271,16 +436,10 @@
                 />
               </div>
 
-              {/* SITグラフ */}
+              {/* 体重グラフ */}
               <div className="bg-white rounded-lg shadow-lg p-6">
-                <h2 className="text-xl font-bold mb-4 text-gray-800">📈 SIT (She is there) グラフ</h2>
-                <ChartComponent 
-                  data={data} 
-                  datasets={[
-                    { key: 'd8', label: 'KUSA-ACUM', color: 'rgb(132, 204, 22)', yAxisID: 'y' }
-                  ]}
-                  dual={false}
-                />
+                <h2 className="text-xl font-bold mb-4 text-gray-800">📈 体重推移グラフ</h2>
+                <HealthChartComponent healthRecords={healthRecords} />
               </div>
             </div>
 
@@ -319,7 +478,7 @@
 
             <div className="text-center mt-8 pb-4">
               <p className="text-sm text-gray-600">
-                🔄 自動更新: 3分毎 | データ件数: {data.length}件
+                🔄 自動更新: 3分毎 | データ件数: {data.length}件 | 健康記録: {healthRecords.length}件
               </p>
             </div>
           </div>
@@ -335,14 +494,12 @@
       useEffect(() => {
         if (!chartRef.current || !data || data.length === 0) return;
 
-        // 既存のチャートを破棄
         if (chartInstance.current) {
           chartInstance.current.destroy();
         }
 
         const ctx = chartRef.current.getContext('2d');
 
-        // データセットを準備
         const chartDatasets = datasets.map(ds => ({
           label: ds.label,
           data: data.map(item => item[ds.key]),
@@ -352,7 +509,6 @@
           yAxisID: ds.yAxisID
         }));
 
-        // Y軸の設定
         const scales = {
           x: {
             display: true,
@@ -416,6 +572,92 @@
           }
         };
       }, [data, datasets, dual]);
+
+      return <canvas ref={chartRef}></canvas>;
+    }
+
+    // 健康記録グラフコンポーネント
+    function HealthChartComponent({ healthRecords }) {
+      const chartRef = useRef(null);
+      const chartInstance = useRef(null);
+
+      useEffect(() => {
+        if (!chartRef.current || !healthRecords || healthRecords.length === 0) return;
+
+        if (chartInstance.current) {
+          chartInstance.current.destroy();
+        }
+
+        const ctx = chartRef.current.getContext('2d');
+
+        // 日付でソート
+        const sortedRecords = [...healthRecords].sort((a, b) => 
+          new Date(a.date) - new Date(b.date)
+        );
+
+        chartInstance.current = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: sortedRecords.map(record => 
+              new Date(record.date).toLocaleDateString('ja-JP', { month: '2-digit', day: '2-digit' })
+            ),
+            datasets: [{
+              label: '体重 (g)',
+              data: sortedRecords.map(record => record.weight),
+              borderColor: 'rgb(34, 197, 94)',
+              backgroundColor: 'rgba(34, 197, 94, 0.1)',
+              tension: 0.4
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            aspectRatio: 2,
+            interaction: {
+              mode: 'index',
+              intersect: false
+            },
+            plugins: {
+              legend: {
+                display: true,
+                position: 'top'
+              },
+              tooltip: {
+                callbacks: {
+                  afterLabel: function(context) {
+                    const record = sortedRecords[context.dataIndex];
+                    return [
+                      `糞: ${record.fecesCondition}`,
+                      record.memo ? `メモ: ${record.memo}` : ''
+                    ].filter(Boolean);
+                  }
+                }
+              }
+            },
+            scales: {
+              y: {
+                type: 'linear',
+                display: true,
+                position: 'left'
+              }
+            }
+          }
+        });
+
+        return () => {
+          if (chartInstance.current) {
+            chartInstance.current.destroy();
+          }
+        };
+      }, [healthRecords]);
+
+      if (!healthRecords || healthRecords.length === 0) {
+        return (
+          <div className="flex items-center justify-center h-48 text-gray-400">
+            データがありません。記録を追加してください。
+          </div>
+        );
+      }
 
       return <canvas ref={chartRef}></canvas>;
     }
