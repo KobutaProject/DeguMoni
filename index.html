@@ -436,6 +436,18 @@
                 />
               </div>
 
+              {/* SITグラフ */}
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-800">📈 SIT (She is there) グラフ</h2>
+                <ChartComponent 
+                  data={data} 
+                  datasets={[
+                    { key: 'd8', label: 'KUSA-ACUM', color: 'rgb(132, 204, 22)', yAxisID: 'y' }
+                  ]}
+                  dual={false}
+                />
+              </div>
+
               {/* 体重グラフ */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">📈 体重推移グラフ</h2>
