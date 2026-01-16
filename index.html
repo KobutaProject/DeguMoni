@@ -1,3 +1,8 @@
+<!-- 
+  デグー環境モニタリングダッシュボード
+  作成日: 2025-01-16
+  説明: Ambient APIからデータを取得してグラフ表示
+-->
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -342,9 +347,9 @@
               )}
             </div>
 
-            {/* 最新値表示 - 5つのボックス */}
+            {/* 最新値表示 - 6つのボックス */}
             {latestData && (
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+              <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
                 <div className="bg-white rounded-lg shadow p-4">
                   <div className="text-sm text-gray-500 mb-1">温度</div>
                   <div className="text-3xl font-bold text-orange-600">{latestData.d3}°C</div>
@@ -364,6 +369,11 @@
                   <div className="text-sm text-gray-500 mb-1">飲水累積</div>
                   <div className="text-3xl font-bold text-cyan-600">{latestData.d6}</div>
                   <div className="text-xs text-gray-400 mt-1">DRK-ACUM</div>
+                </div>
+                <div className="bg-white rounded-lg shadow p-4">
+                  <div className="text-sm text-gray-500 mb-1">MOT</div>
+                  <div className="text-3xl font-bold text-purple-600">{latestData.d7}</div>
+                  <div className="text-xs text-gray-400 mt-1">MOT-ACUM</div>
                 </div>
                 <div className="bg-white rounded-lg shadow p-4">
                   <div className="text-sm text-gray-500 mb-1">SIT</div>
@@ -391,7 +401,8 @@
                   <DataRow label="回転速度" value={latestData?.d2} trend={calculateTrend(data, 'd2')} />
                   <DataRow label="走行距離" value={latestData?.d1} />
                   <DataRow label="飲水累積" value={latestData?.d6} />
-                  <DataRow label="SIT" value={latestData?.d8} />
+                  <DataRow label="MOT累積" value={latestData?.d7} />
+                  <DataRow label="SIT累積" value={latestData?.d8} />
                 </div>
               </div>
             </div>
@@ -436,6 +447,18 @@
                 />
               </div>
 
+              {/* MOTグラフ */}
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-800">📈 MOT (Motion) グラフ</h2>
+                <ChartComponent 
+                  data={data} 
+                  datasets={[
+                    { key: 'd7', label: 'MOT-ACUM', color: 'rgb(168, 85, 247)', yAxisID: 'y' }
+                  ]}
+                  dual={false}
+                />
+              </div>
+
               {/* SITグラフ */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">📈 SIT (She is there) グラフ</h2>
@@ -468,6 +491,7 @@
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">回転速度</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">走行距離</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">飲水</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">MOT</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">SIT</th>
                     </tr>
                   </thead>
@@ -480,6 +504,7 @@
                         <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d2}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d1}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d5}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d7}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d8}</td>
                       </tr>
                     ))}
