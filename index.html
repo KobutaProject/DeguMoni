@@ -448,11 +448,11 @@
                                                                                 </div>
                                                                                 <div className="flex flex-col justify-center space-y-3">
                                                                                         <h3 className="font-bold text-gray-800 mb-2">詳細データ:</h3>
-                                                                                        <StateOccupancyDetail label="🏃 走行中" minutes={stateOccupancy['走行中']} color="text-purple-600" />
-                                                                                        <StateOccupancyDetail label="🍽️ 食事中" minutes={stateOccupancy['食事中']} color="text-orange-600" />
-                                                                                        <StateOccupancyDetail label="💧 飲水中" minutes={stateOccupancy['飲水中']} color="text-cyan-600" />
-                                                                                        <StateOccupancyDetail label="🐹 活動中" minutes={stateOccupancy['活動中']} color="text-green-600" />
-                                                                                        <StateOccupancyDetail label="😴 休息中" minutes={stateOccupancy['休息中']} color="text-gray-600" />
+                                                                                        <StateOccupancyDetail label="🏃 走行中" minutes={stateOccupancy['走行中']} color="text-purple-600" totalMinutes={Object.values(stateOccupancy).reduce((a, b) => a + b, 0)} />
+                                                                                        <StateOccupancyDetail label="🍽️ 食事中" minutes={stateOccupancy['食事中']} color="text-orange-600" totalMinutes={Object.values(stateOccupancy).reduce((a, b) => a + b, 0)} />
+                                                                                        <StateOccupancyDetail label="💧 飲水中" minutes={stateOccupancy['飲水中']} color="text-cyan-600" totalMinutes={Object.values(stateOccupancy).reduce((a, b) => a + b, 0)} />
+                                                                                        <StateOccupancyDetail label="🐹 活動中" minutes={stateOccupancy['活動中']} color="text-green-600" totalMinutes={Object.values(stateOccupancy).reduce((a, b) => a + b, 0)} />
+                                                                                        <StateOccupancyDetail label="😴 休息中" minutes={stateOccupancy['休息中']} color="text-gray-600" totalMinutes={Object.values(stateOccupancy).reduce((a, b) => a + b, 0)} />
                                                                                 </div>
                                                                         </div>
                                                                 </div>
@@ -995,16 +995,22 @@
                 }
 
                 // 状態占有時間の詳細表示コンポーネント
-                function StateOccupancyDetail({ label, minutes, color }) {
+                function StateOccupancyDetail({ label, minutes, color, totalMinutes }) {
                         const hours = Math.floor(minutes / 60);
                         const mins = minutes % 60;
+                        const percentage = totalMinutes > 0 ? ((minutes / totalMinutes) * 100).toFixed(1) : '0.0';
 
                         return (
                                 <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
                                         <span className="text-sm font-medium text-gray-700">{label}</span>
-                                        <span className={`text-lg font-bold ${color}`}>
-                                                {hours > 0 ? `${hours}時間${mins}分` : `${mins}分`}
-                                        </span>
+                                        <div className="flex items-center gap-3">
+                                                <span className={`text-lg font-bold ${color}`}>
+                                                        {hours > 0 ? `${hours}時間${mins}分` : `${mins}分`}
+                                                </span>
+                                                <span className="text-sm font-semibold text-gray-600 min-w-[3.5rem] text-right">
+                                                        ({percentage}%)
+                                                </span>
+                                        </div>
                                 </div>
                         );
                 }
