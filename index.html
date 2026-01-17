@@ -1,7 +1,7 @@
 <!-- 
-  デグー環境モニタリングダッシュボード + 状態判定機能（差分表示版）
-  作成日: 2025-01-17
-  説明: Ambient APIからデータを取得してグラフ表示 + 5分間の増加量を数値表示
+  デグー環境モニタリングダッシュボード + 状態判定機能（差分表示版）+ 状態占有時間円グラフ
+  作成日: 2025-01-18
+  説明: Ambient APIからデータを取得してグラフ表示 + 5分間の増加量を数値表示 + 状態別占有時間の円グラフ
 -->
 <!DOCTYPE html>
 <html lang="ja">
@@ -50,9 +50,11 @@
                                                 states: [{
                                                         label: '⏳ データ収集中',
                                                         color: 'bg-gray-300 text-gray-700',
-                                                        value: '（前回データ待ち）'
+                                                        value: '（前回データ待ち）',
+                                                        priority: 999
                                                 }],
-                                                diffs: null
+                                                diffs: null,
+                                                primaryState: 'データ収集中'
                                         };
                                 }
 
@@ -72,52 +74,98 @@
                                         mot: motDiff
                                 };
 
-                                // 5分間の走行距離増加 (ROT-ACUM d1の差分)
+                                // 5分間の走行距離増加 (ROT-ACUM d1の差分) - 優先度1
                                 if (rotDiff > 0) {
                                         states.push({
                                                 label: '🏃 走行中',
                                                 color: 'bg-purple-500 text-white',
-                                                value: `+${rotDiff.toFixed(1)}m/5分`
+                                                value: `+${rotDiff.toFixed(1)}m/5分`,
+                                                priority: 1,
+                                                stateKey: '走行中'
                                         });
                                 }
 
-                                // 5分間の草皿重量変化 (KUSA-ACUM d8の差分)
+                                // 5分間の草皿重量変化 (KUSA-ACUM d8の差分) - 優先度2
                                 if (sitDiff > 0) {
                                         states.push({
                                                 label: '🍽️ 食事中',
                                                 color: 'bg-orange-500 text-white',
-                                                value: `+${sitDiff.toFixed(1)}/5分`
+                                                value: `+${sitDiff.toFixed(1)}/5分`,
+                                                priority: 2,
+                                                stateKey: '食事中'
                                         });
                                 }
 
-                                // 5分間の飲水量増加 (DRK-ACUM d6の差分)
+                                // 5分間の飲水量増加 (DRK-ACUM d6の差分) - 優先度3
                                 if (drkDiff > 0) {
                                         states.push({
                                                 label: '💧 飲水中',
                                                 color: 'bg-cyan-500 text-white',
-                                                value: `+${drkDiff.toFixed(1)}ml/5分`
+                                                value: `+${drkDiff.toFixed(1)}ml/5分`,
+                                                priority: 3,
+                                                stateKey: '飲水中'
                                         });
                                 }
 
-                                // 5分間の動体検知増加 (MOT-ACUM d7の差分) - 走っていない場合のみ
+                                // 5分間の動体検知増加 (MOT-ACUM d7の差分) - 走っていない場合のみ - 優先度4
                                 if (motDiff > 0 && rotDiff === 0) {
                                         states.push({
                                                 label: '🐹 活動中',
                                                 color: 'bg-green-500 text-white',
-                                                value: `+${motDiff}/5分`
+                                                value: `+${motDiff}/5分`,
+                                                priority: 4,
+                                                stateKey: '活動中'
                                         });
                                 }
 
-                                // 寝ている判定 - 何も活動がない場合のみ
+                                // 寝ている判定 - 何も活動がない場合のみ - 優先度5
                                 if (states.length === 0) {
                                         states.push({
                                                 label: '😴 休息中',
                                                 color: 'bg-gray-500 text-white',
-                                                value: '（活動なし）'
+                                                value: '（活動なし）',
+                                                priority: 5,
+                                                stateKey: '休息中'
                                         });
                                 }
 
-                                return { states, diffs };
+                                // 優先度が最も高い状態を選択（数値が小さいほど優先度が高い）
+                                const primaryState = states.reduce((prev, current) => 
+                                        prev.priority < current.priority ? prev : current
+                                ).stateKey;
+
+                                return { states, diffs, primaryState };
+                        };
+
+                        // 状態占有時間を計算する関数
+                        const calculateStateOccupancy = (dataArray) => {
+                                const stateCounts = {
+                                        '走行中': 0,
+                                        '食事中': 0,
+                                        '飲水中': 0,
+                                        '活動中': 0,
+                                        '休息中': 0
+                                };
+
+                                // 各データポイントで状態を判定してカウント
+                                dataArray.forEach((current, index) => {
+                                        if (index === 0) return; // 最初のデータはスキップ（前データがない）
+                                        
+                                        const previous = dataArray[index - 1];
+                                        const judgment = judgeDeguState(current, previous);
+                                        
+                                        if (judgment.primaryState && judgment.primaryState !== 'データ収集中') {
+                                                stateCounts[judgment.primaryState]++;
+                                        }
+                                });
+
+                                // 分単位に変換（各カウント = 5分間）
+                                const stateMinutes = {};
+                                Object.keys(stateCounts).forEach(state => {
+                                        stateMinutes[state] = stateCounts[state] * 5;
+                                });
+
+                                return stateMinutes;
                         };
 
                         const fetchData = async () => {
@@ -280,6 +328,9 @@
                         const deguStates = judgmentResult.states;
                         const sensorDiffs = judgmentResult.diffs;
 
+                        // 状態占有時間を計算
+                        const stateOccupancy = data.length > 0 ? calculateStateOccupancy(data) : null;
+
                         return (
                                 <div key={updateKey} className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
                                         <div className="max-w-7xl mx-auto">
@@ -325,60 +376,83 @@
                                                         </div>
                                                 </div>
 
-                                                {/* デグーの状態表示セクション */}
-                                                <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-                                                        <h2 className="text-xl font-bold mb-4 text-gray-800">🐹 デグーの現在の状態（過去5分間の活動）</h2>
-                                                        <div className="flex flex-wrap gap-3 mb-3">
-                                                                {deguStates.map((state, idx) => (
-                                                                        <span key={idx} className={`px-4 py-2 rounded-full ${state.color} font-semibold text-lg`}>
-                                                                                {state.label} {state.value}
-                                                                        </span>
-                                                                ))}
-                                                        </div>
-                                                        <div className="text-sm text-gray-500 mb-4">
-                                                                判定期間: {previousData?.fullTime || '--'} → {latestData?.fullTime || '--'}
+                                                {/* デグーの状態表示セクション + 状態占有時間の円グラフ */}
+                                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                                                        {/* デグーの現在の状態 */}
+                                                        <div className="bg-white rounded-lg shadow-lg p-6">
+                                                                <h2 className="text-xl font-bold mb-4 text-gray-800">🐹 デグーの現在の状態（過去5分間の活動）</h2>
+                                                                <div className="flex flex-wrap gap-3 mb-3">
+                                                                        {deguStates.map((state, idx) => (
+                                                                                <span key={idx} className={`px-4 py-2 rounded-full ${state.color} font-semibold text-lg`}>
+                                                                                        {state.label} {state.value}
+                                                                                </span>
+                                                                        ))}
+                                                                </div>
+                                                                <div className="text-sm text-gray-500 mb-4">
+                                                                        判定期間: {previousData?.fullTime || '--'} → {latestData?.fullTime || '--'}
+                                                                </div>
+
+                                                                {/* 過去5分間の変化を表示 */}
+                                                                {sensorDiffs && (
+                                                                        <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                                                                                <p className="font-semibold mb-3 text-gray-800">過去5分間の変化:</p>
+                                                                                <div className="grid grid-cols-2 gap-3">
+                                                                                        <div className="flex items-center gap-2">
+                                                                                                <span className="text-xl">🏃</span>
+                                                                                                <div>
+                                                                                                        <div className="text-xs text-gray-500">走行距離</div>
+                                                                                                        <div className={`font-semibold ${sensorDiffs.rot > 0 ? 'text-purple-600' : 'text-gray-400'}`}>
+                                                                                                                +{sensorDiffs.rot.toFixed(1)}m
+                                                                                                        </div>
+                                                                                                </div>
+                                                                                        </div>
+                                                                                        <div className="flex items-center gap-2">
+                                                                                                <span className="text-xl">🍽️</span>
+                                                                                                <div>
+                                                                                                        <div className="text-xs text-gray-500">食事</div>
+                                                                                                        <div className={`font-semibold ${sensorDiffs.sit > 0 ? 'text-orange-600' : 'text-gray-400'}`}>
+                                                                                                                +{sensorDiffs.sit.toFixed(1)}
+                                                                                                        </div>
+                                                                                                </div>
+                                                                                        </div>
+                                                                                        <div className="flex items-center gap-2">
+                                                                                                <span className="text-xl">💧</span>
+                                                                                                <div>
+                                                                                                        <div className="text-xs text-gray-500">飲水</div>
+                                                                                                        <div className={`font-semibold ${sensorDiffs.drk > 0 ? 'text-cyan-600' : 'text-gray-400'}`}>
+                                                                                                                +{sensorDiffs.drk.toFixed(1)}ml
+                                                                                                        </div>
+                                                                                                </div>
+                                                                                        </div>
+                                                                                        <div className="flex items-center gap-2">
+                                                                                                <span className="text-xl">🐹</span>
+                                                                                                <div>
+                                                                                                        <div className="text-xs text-gray-500">動体</div>
+                                                                                                        <div className={`font-semibold ${sensorDiffs.mot > 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                                                                                                +{sensorDiffs.mot}回
+                                                                                                        </div>
+                                                                                                </div>
+                                                                                        </div>
+                                                                                </div>
+                                                                        </div>
+                                                                )}
                                                         </div>
 
-                                                        {/* 過去5分間の変化を表示 */}
-                                                        {sensorDiffs && (
-                                                                <div className="mt-4 p-4 bg-gray-50 rounded-lg">
-                                                                        <p className="font-semibold mb-3 text-gray-800">過去5分間の変化:</p>
-                                                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                                                                                <div className="flex items-center gap-2">
-                                                                                        <span className="text-xl">🏃</span>
-                                                                                        <div>
-                                                                                                <div className="text-xs text-gray-500">走行距離</div>
-                                                                                                <div className={`font-semibold ${sensorDiffs.rot > 0 ? 'text-purple-600' : 'text-gray-400'}`}>
-                                                                                                        +{sensorDiffs.rot.toFixed(1)}m
-                                                                                                </div>
-                                                                                        </div>
+                                                        {/* 状態占有時間の円グラフ */}
+                                                        {stateOccupancy && (
+                                                                <div className="bg-white rounded-lg shadow-lg p-6">
+                                                                        <h2 className="text-xl font-bold mb-4 text-gray-800">🥧 状態別占有時間（集計期間：{data.length}件 ≈ {Math.round(data.length * 5 / 60)}時間）</h2>
+                                                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                                                                <div>
+                                                                                        <StateOccupancyPieChart stateOccupancy={stateOccupancy} />
                                                                                 </div>
-                                                                                <div className="flex items-center gap-2">
-                                                                                        <span className="text-xl">🍽️</span>
-                                                                                        <div>
-                                                                                                <div className="text-xs text-gray-500">食事</div>
-                                                                                                <div className={`font-semibold ${sensorDiffs.sit > 0 ? 'text-orange-600' : 'text-gray-400'}`}>
-                                                                                                        +{sensorDiffs.sit.toFixed(1)}
-                                                                                                </div>
-                                                                                        </div>
-                                                                                </div>
-                                                                                <div className="flex items-center gap-2">
-                                                                                        <span className="text-xl">💧</span>
-                                                                                        <div>
-                                                                                                <div className="text-xs text-gray-500">飲水</div>
-                                                                                                <div className={`font-semibold ${sensorDiffs.drk > 0 ? 'text-cyan-600' : 'text-gray-400'}`}>
-                                                                                                        +{sensorDiffs.drk.toFixed(1)}ml
-                                                                                                </div>
-                                                                                        </div>
-                                                                                </div>
-                                                                                <div className="flex items-center gap-2">
-                                                                                        <span className="text-xl">🐹</span>
-                                                                                        <div>
-                                                                                                <div className="text-xs text-gray-500">動体</div>
-                                                                                                <div className={`font-semibold ${sensorDiffs.mot > 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                                                                        +{sensorDiffs.mot}回
-                                                                                                </div>
-                                                                                        </div>
+                                                                                <div className="flex flex-col justify-center space-y-3">
+                                                                                        <h3 className="font-bold text-gray-800 mb-2">詳細データ:</h3>
+                                                                                        <StateOccupancyDetail label="🏃 走行中" minutes={stateOccupancy['走行中']} color="text-purple-600" />
+                                                                                        <StateOccupancyDetail label="🍽️ 食事中" minutes={stateOccupancy['食事中']} color="text-orange-600" />
+                                                                                        <StateOccupancyDetail label="💧 飲水中" minutes={stateOccupancy['飲水中']} color="text-cyan-600" />
+                                                                                        <StateOccupancyDetail label="🐹 活動中" minutes={stateOccupancy['活動中']} color="text-green-600" />
+                                                                                        <StateOccupancyDetail label="😴 休息中" minutes={stateOccupancy['休息中']} color="text-gray-600" />
                                                                                 </div>
                                                                         </div>
                                                                 </div>
@@ -842,6 +916,97 @@
                         }
 
                         return <canvas ref={chartRef}></canvas>;
+                }
+
+                // 状態占有時間の円グラフコンポーネント
+                function StateOccupancyPieChart({ stateOccupancy }) {
+                        const chartRef = useRef(null);
+                        const chartInstance = useRef(null);
+
+                        useEffect(() => {
+                                if (!chartRef.current || !stateOccupancy) return;
+
+                                if (chartInstance.current) {
+                                        chartInstance.current.destroy();
+                                }
+
+                                const ctx = chartRef.current.getContext('2d');
+
+                                const labels = ['🏃 走行中', '🍽️ 食事中', '💧 飲水中', '🐹 活動中', '😴 休息中'];
+                                const dataValues = [
+                                        stateOccupancy['走行中'],
+                                        stateOccupancy['食事中'],
+                                        stateOccupancy['飲水中'],
+                                        stateOccupancy['活動中'],
+                                        stateOccupancy['休息中']
+                                ];
+                                const colors = [
+                                        'rgb(168, 85, 247)',   // 走行中 - purple
+                                        'rgb(249, 115, 22)',   // 食事中 - orange
+                                        'rgb(6, 182, 212)',    // 飲水中 - cyan
+                                        'rgb(34, 197, 94)',    // 活動中 - green
+                                        'rgb(107, 114, 128)'   // 休息中 - gray
+                                ];
+
+                                chartInstance.current = new Chart(ctx, {
+                                        type: 'pie',
+                                        data: {
+                                                labels: labels,
+                                                datasets: [{
+                                                        data: dataValues,
+                                                        backgroundColor: colors,
+                                                        borderColor: 'white',
+                                                        borderWidth: 2
+                                                }]
+                                        },
+                                        options: {
+                                                responsive: true,
+                                                maintainAspectRatio: true,
+                                                aspectRatio: 1.5,
+                                                plugins: {
+                                                        legend: {
+                                                                display: true,
+                                                                position: 'bottom'
+                                                        },
+                                                        tooltip: {
+                                                                callbacks: {
+                                                                        label: function (context) {
+                                                                                const minutes = context.parsed;
+                                                                                const hours = Math.floor(minutes / 60);
+                                                                                const mins = minutes % 60;
+                                                                                const total = dataValues.reduce((a, b) => a + b, 0);
+                                                                                const percentage = ((minutes / total) * 100).toFixed(1);
+                                                                                return `${context.label}: ${hours}時間${mins}分 (${percentage}%)`;
+                                                                        }
+                                                                }
+                                                        }
+                                                }
+                                        }
+                                });
+
+                                return () => {
+                                        if (chartInstance.current) {
+                                                chartInstance.current.destroy();
+                                        }
+                                };
+                        }, [stateOccupancy]);
+
+                        return <canvas ref={chartRef}></canvas>;
+                }
+
+                // 状態占有時間の詳細表示コンポーネント
+                function StateOccupancyDetail({ label, minutes, color }) {
+                        const hours = Math.floor(minutes / 60);
+                        const mins = minutes % 60;
+
+                        return (
+                                <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                                        <span className="text-sm font-medium text-gray-700">{label}</span>
+                                        <span className={`text-lg font-bold ${color}`}>
+                                                {hours > 0 ? `${hours}時間${mins}分` : `${mins}分`}
+                                        </span>
+                                </div>
+                        );
                 }
 
                 function DataRow({ label, value, trend }) {
