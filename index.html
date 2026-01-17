@@ -1,7 +1,7 @@
 <!-- 
-  デグー環境モニタリングダッシュボード
-  作成日: 2025-01-16
-  説明: Ambient APIからデータを取得してグラフ表示
+  デグー環境モニタリングダッシュボード + 状態判定機能（差分版）
+  作成日: 2025-01-17
+  説明: Ambient APIからデータを取得してグラフ表示 + 5分間の増加量で状態判定
 -->
 <!DOCTYPE html>
 <html lang="ja">
@@ -40,6 +40,75 @@
       const CHANNEL_ID = '77767';
       const READ_KEY = '73ff0a03269c1f35';
       const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbygafxILyUYiajSYjThZeIezQS5SLzodxgjkfnmRFcqBEUo_iRS4MCeSUmlHsvl8XinVw/exec';
+
+      // デグーの状態を判定する関数（5分間の差分で判定）
+      const judgeDeguState = (currentData, previousData) => {
+        if (!previousData) {
+          return [{
+            label: '⏳ データ収集中',
+            color: 'bg-gray-300 text-gray-700',
+            value: '（前回データ待ち）'
+          }];
+        }
+
+        const states = [];
+        
+        // 5分間の走行距離増加 (ROT-ACUM d1の差分)
+        const rotDiff = (currentData.d1 || 0) - (previousData.d1 || 0);
+        if (rotDiff > 0) {
+          states.push({
+            label: '🏃 走行中',
+            color: 'bg-purple-500 text-white',
+            value: `+${rotDiff.toFixed(1)}m/5分`
+          });
+        }
+        
+        // 5分間の草皿重量変化 (KUSA-ACUM d8の差分)
+        const sitDiff = (currentData.d8 || 0) - (previousData.d8 || 0);
+        if (sitDiff > 0) {
+          states.push({
+            label: '🍽️ 食事中',
+            color: 'bg-orange-500 text-white',
+            value: `+${sitDiff.toFixed(1)}/5分`
+          });
+        }
+        
+        // 5分間の飲水量増加 (DRK-ACUM d6の差分)
+        const drkDiff = (currentData.d6 || 0) - (previousData.d6 || 0);
+        if (drkDiff > 0) {
+          states.push({
+            label: '💧 飲水中',
+            color: 'bg-cyan-500 text-white',
+            value: `+${drkDiff.toFixed(1)}ml/5分`
+          });
+        }
+        
+        // 5分間の動体検知増加 (MOT-ACUM d7の差分) - 走っていない場合のみ
+        const motDiff = (currentData.d7 || 0) - (previousData.d7 || 0);
+        if (motDiff > 0 && rotDiff === 0) {
+          states.push({
+            label: '🐹 活動中',
+            color: 'bg-green-500 text-white',
+            value: `+${motDiff}/5分`
+          });
+        }
+        
+        // 寝ている判定 (5分間で全センサーの増加が0)
+        const isResting = rotDiff === 0 && drkDiff === 0 && motDiff === 0 && sitDiff === 0;
+        if (isResting) {
+          states.push({
+            label: '😴 休息中',
+            color: 'bg-gray-500 text-white',
+            value: '（活動なし）'
+          });
+        }
+        
+        return states.length > 0 ? states : [{
+          label: '❓ 状態不明',
+          color: 'bg-gray-300 text-gray-700',
+          value: ''
+        }];
+      };
 
       const fetchData = async () => {
         try {
@@ -195,6 +264,10 @@
         );
       }
 
+      // 最新データとその1つ前のデータを取得
+      const previousData = data.length >= 2 ? data[data.length - 2] : null;
+      const deguStates = latestData ? judgeDeguState(latestData, previousData) : [];
+
       return (
         <div key={updateKey} className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
           <div className="max-w-7xl mx-auto">
@@ -240,111 +313,29 @@
               </div>
             </div>
 
-            {/* 健康記録入力フォーム */}
+            {/* デグーの状態表示セクション */}
             <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-              <h2 className="text-xl font-bold mb-4 text-gray-800">📝 健康記録を追加</h2>
-              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    日付
-                  </label>
-                  <input 
-                    type="date" 
-                    value={recordDate}
-                    onChange={(e) => setRecordDate(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    体重 (g)
-                  </label>
-                  <input 
-                    type="number" 
-                    value={weight}
-                    onChange={(e) => setWeight(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="250"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    糞の状態
-                  </label>
-                  <select 
-                    value={fecesCondition}
-                    onChange={(e) => setFecesCondition(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                  >
-                    <option value="">選択してください</option>
-                    <option value="normal">正常</option>
-                    <option value="soft">軟便</option>
-                    <option value="hard">硬い</option>
-                    <option value="diarrhea">下痢</option>
-                  </select>
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    メモ
-                  </label>
-                  <input 
-                    type="text"
-                    value={memo}
-                    onChange={(e) => setMemo(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-                    placeholder="気づいたことなど"
-                  />
-                </div>
-
-                <div className="flex items-end">
-                  <button
-                    onClick={saveHealthRecord}
-                    className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-                  >
-                    💾 保存
-                  </button>
-                </div>
+              <h2 className="text-xl font-bold mb-4 text-gray-800">🐹 デグーの現在の状態（過去5分間の活動）</h2>
+              <div className="flex flex-wrap gap-3 mb-3">
+                {deguStates.map((state, idx) => (
+                  <span key={idx} className={`px-4 py-2 rounded-full ${state.color} font-semibold text-lg`}>
+                    {state.label} {state.value}
+                  </span>
+                ))}
               </div>
-
-              {/* 健康記録テーブル */}
-              {healthRecords.length > 0 && (
-                <div className="mt-6">
-                  <h3 className="text-lg font-bold mb-3 text-gray-800">📊 記録履歴（最新10件）</h3>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">日付</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">体重 (g)</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">糞の状態</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">メモ</th>
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {healthRecords.slice(-10).reverse().map((record, idx) => (
-                          <tr key={idx} className="hover:bg-gray-50">
-                            <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">
-                              {new Date(record.date).toLocaleDateString('ja-JP')}
-                            </td>
-                            <td className="px-4 py-2 whitespace-nowrap text-sm font-semibold text-green-600">
-                              {record.weight}g
-                            </td>
-                            <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">
-                              {record.fecesCondition}
-                            </td>
-                            <td className="px-4 py-2 text-sm text-gray-900">
-                              {record.memo}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
+              <div className="text-sm text-gray-500 mb-4">
+                判定期間: {previousData?.fullTime || '--'} → {latestData?.fullTime || '--'}
+              </div>
+              <div className="mt-4 p-4 bg-gray-50 rounded-lg text-sm text-gray-600">
+                <p className="font-semibold mb-2">判定ロジック（5分間の増加量で判定）:</p>
+                <ul className="space-y-1 ml-4">
+                  <li>🏃 <strong>走行中</strong>: 走行距離（d1）が前回より増加</li>
+                  <li>🍽️ <strong>食事中</strong>: 草皿センサー（d8）が前回より増加</li>
+                  <li>💧 <strong>飲水中</strong>: 飲水量（d6）が前回より増加</li>
+                  <li>🐹 <strong>活動中</strong>: 動体センサー（d7）が反応し、走行はしていない</li>
+                  <li>😴 <strong>休息中</strong>: すべてのセンサーが増加なし</li>
+                </ul>
+              </div>
             </div>
 
             {/* 最新値表示 - 6つのボックス */}
@@ -479,7 +470,7 @@
             </div>
 
             {/* データテーブル */}
-            <div className="bg-white rounded-lg shadow-lg p-6">
+            <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
               <h2 className="text-xl font-bold mb-4 text-gray-800">📊 最新データ（20件）</h2>
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
@@ -511,6 +502,113 @@
                   </tbody>
                 </table>
               </div>
+            </div>
+
+            {/* 健康記録入力フォーム - ページ最下部に移動 */}
+            <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+              <h2 className="text-xl font-bold mb-4 text-gray-800">📝 健康記録を追加</h2>
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    日付
+                  </label>
+                  <input 
+                    type="date" 
+                    value={recordDate}
+                    onChange={(e) => setRecordDate(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    体重 (g)
+                  </label>
+                  <input 
+                    type="number" 
+                    value={weight}
+                    onChange={(e) => setWeight(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="250"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    糞の状態
+                  </label>
+                  <select 
+                    value={fecesCondition}
+                    onChange={(e) => setFecesCondition(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                  >
+                    <option value="">選択してください</option>
+                    <option value="normal">正常</option>
+                    <option value="soft">軟便</option>
+                    <option value="hard">硬い</option>
+                    <option value="diarrhea">下痢</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    メモ
+                  </label>
+                  <input 
+                    type="text"
+                    value={memo}
+                    onChange={(e) => setMemo(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                    placeholder="気づいたことなど"
+                  />
+                </div>
+
+                <div className="flex items-end">
+                  <button
+                    onClick={saveHealthRecord}
+                    className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                  >
+                    💾 保存
+                  </button>
+                </div>
+              </div>
+
+              {/* 健康記録テーブル */}
+              {healthRecords.length > 0 && (
+                <div className="mt-6">
+                  <h3 className="text-lg font-bold mb-3 text-gray-800">📊 記録履歴（最新10件）</h3>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">日付</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">体重 (g)</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">糞の状態</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">メモ</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {healthRecords.slice(-10).reverse().map((record, idx) => (
+                          <tr key={idx} className="hover:bg-gray-50">
+                            <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">
+                              {new Date(record.date).toLocaleDateString('ja-JP')}
+                            </td>
+                            <td className="px-4 py-2 whitespace-nowrap text-sm font-semibold text-green-600">
+                              {record.weight}g
+                            </td>
+                            <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">
+                              {record.fecesCondition}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-gray-900">
+                              {record.memo}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="text-center mt-8 pb-4">
