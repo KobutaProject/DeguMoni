@@ -2,7 +2,7 @@
   デグー環境モニタリングダッシュボード + 状態判定機能（差分表示版）+ 状態占有時間円グラフ
   作成日: 2025-01-18
   説明: Ambient APIからデータを取得してグラフ表示 + 5分間の増加量を数値表示 + 状態別占有時間の円グラフ
-  修正: MOT表示の小数点桁数を1桁に統一（単位も追加）
+  修正: 状態占有時間の計算精度を向上（実測値ベースの時間配分）
 -->
 <!DOCTYPE html>
 <html lang="ja">
@@ -55,17 +55,26 @@
               priority: 999
             }],
             diffs: null,
-            primaryState: 'データ収集中'
+            primaryState: 'データ収集中',
+            timeAllocation: null
           };
         }
 
         const states = [];
 
         // 5分間の各センサーの差分を計算
-        const rotDiff = (currentData.d1 || 0) - (previousData.d1 || 0);
-        const sitDiff = (currentData.d8 || 0) - (previousData.d8 || 0);
-        const drkDiff = (currentData.d6 || 0) - (previousData.d6 || 0);
-        const motDiff = (currentData.d7 || 0) - (previousData.d7 || 0);
+        // 注意: 日の変わり目で累積値がリセットされる場合、差分がマイナスになる
+        let rotDiff = (currentData.d1 || 0) - (previousData.d1 || 0);
+        let sitDiff = (currentData.d8 || 0) - (previousData.d8 || 0);
+        let drkDiff = (currentData.d6 || 0) - (previousData.d6 || 0);
+        let motDiff = (currentData.d7 || 0) - (previousData.d7 || 0);
+        
+        // 日の変わり目でリセットされた場合（差分がマイナス）は0とする
+        // この期間のデータは信頼できないため、活動なしとして扱う
+        if (rotDiff < 0) rotDiff = 0;
+        if (sitDiff < 0) sitDiff = 0;
+        if (drkDiff < 0) drkDiff = 0;
+        if (motDiff < 0) motDiff = 0;
 
         // 差分データを保存
         const diffs = {
@@ -75,7 +84,72 @@
           mot: motDiff
         };
 
-        // 5分間の走行距離増加 (ROT-ACUM d1の差分) - 優先度1
+        // 時間配分の計算（5分 = 300秒 を100として計算）
+        const timeAllocation = {
+          running: 0,   // 走行
+          eating: 0,    // 食事
+          drinking: 0,  // 飲水
+          active: 0,    // 活動
+          resting: 0    // 休息
+        };
+
+        const INTERVAL_MINUTES = 5;
+        const DRINKING_WEIGHT = 0.4; // 飲水のウエイト
+
+        // 食事時間の計算（sitDiffが実測値、100 = 5分）
+        if (sitDiff > 0) {
+          timeAllocation.eating = (sitDiff / 100) * INTERVAL_MINUTES;
+        }
+
+        // 活動時間の計算（motDiffが実測値、100 = 5分）
+        let rawActiveTime = 0;
+        if (motDiff > 0) {
+          rawActiveTime = (motDiff / 100) * INTERVAL_MINUTES;
+        }
+
+        // 飲水時間の計算
+        if (drkDiff > 0) {
+          timeAllocation.drinking = INTERVAL_MINUTES * DRINKING_WEIGHT;
+        }
+
+        // 走行時間の計算
+        if (rotDiff > 0) {
+          // 走行している場合
+          let remainingTime = INTERVAL_MINUTES - timeAllocation.eating - timeAllocation.drinking;
+          timeAllocation.running = Math.max(0, remainingTime);
+          
+          // 活動時間は無視（走行に含まれる）
+          timeAllocation.active = 0;
+        } else {
+          // 走行していない場合
+          if (drkDiff > 0) {
+            // 飲水している場合
+            if (timeAllocation.eating > 0) {
+              // 食事もしている場合：食事を正として、残りを飲水とする
+              let remainingTime = INTERVAL_MINUTES - timeAllocation.eating;
+              timeAllocation.drinking = Math.min(timeAllocation.drinking, remainingTime);
+              
+              // さらに残った時間を活動に配分
+              remainingTime = INTERVAL_MINUTES - timeAllocation.eating - timeAllocation.drinking;
+              timeAllocation.active = Math.min(rawActiveTime, remainingTime);
+            } else {
+              // 食事していない場合：飲水を正として、残りを活動に配分
+              let remainingTime = INTERVAL_MINUTES - timeAllocation.drinking;
+              timeAllocation.active = Math.min(rawActiveTime, remainingTime);
+            }
+          } else {
+            // 飲水していない場合：食事と活動を配分
+            let remainingTime = INTERVAL_MINUTES - timeAllocation.eating;
+            timeAllocation.active = Math.min(rawActiveTime, remainingTime);
+          }
+        }
+
+        // 休息時間の計算（残り時間）
+        const usedTime = timeAllocation.running + timeAllocation.eating + 
+                        timeAllocation.drinking + timeAllocation.active;
+        timeAllocation.resting = Math.max(0, INTERVAL_MINUTES - usedTime);
+
+        // 状態の表示（優先度順）
         if (rotDiff > 0) {
           states.push({
             label: '🏃 走行中',
@@ -86,7 +160,6 @@
           });
         }
 
-        // 5分間の草皿重量変化 (KUSA-ACUM d8の差分) - 優先度2
         if (sitDiff > 0) {
           states.push({
             label: '🍽️ 食事中',
@@ -97,7 +170,6 @@
           });
         }
 
-        // 5分間の飲水量増加 (DRK-ACUM d6の差分) - 優先度3
         if (drkDiff > 0) {
           states.push({
             label: '💧 飲水中',
@@ -108,7 +180,6 @@
           });
         }
 
-        // 5分間の動体検知増加 (MOT-ACUM d7の差分) - 走っていない場合のみ - 優先度4
         if (motDiff > 0 && rotDiff === 0) {
           states.push({
             label: '🐹 活動中',
@@ -119,7 +190,6 @@
           });
         }
 
-        // 寝ている判定 - 何も活動がない場合のみ - 優先度5
         if (states.length === 0) {
           states.push({
             label: '😴 休息中',
@@ -135,12 +205,12 @@
           prev.priority < current.priority ? prev : current
         ).stateKey;
 
-        return { states, diffs, primaryState };
+        return { states, diffs, primaryState, timeAllocation };
       };
 
-      // 状態占有時間を計算する関数
+      // 状態占有時間を計算する関数（改良版：実測値ベース）
       const calculateStateOccupancy = (dataArray) => {
-        const stateCounts = {
+        const stateTimes = {
           '走行中': 0,
           '食事中': 0,
           '飲水中': 0,
@@ -148,25 +218,23 @@
           '休息中': 0
         };
 
-        // 各データポイントで状態を判定してカウント
+        // 各データポイントで状態を判定して時間を加算
         dataArray.forEach((current, index) => {
           if (index === 0) return; // 最初のデータはスキップ（前データがない）
           
           const previous = dataArray[index - 1];
           const judgment = judgeDeguState(current, previous);
           
-          if (judgment.primaryState && judgment.primaryState !== 'データ収集中') {
-            stateCounts[judgment.primaryState]++;
+          if (judgment.timeAllocation) {
+            stateTimes['走行中'] += judgment.timeAllocation.running;
+            stateTimes['食事中'] += judgment.timeAllocation.eating;
+            stateTimes['飲水中'] += judgment.timeAllocation.drinking;
+            stateTimes['活動中'] += judgment.timeAllocation.active;
+            stateTimes['休息中'] += judgment.timeAllocation.resting;
           }
         });
 
-        // 分単位に変換（各カウント = 5分間）
-        const stateMinutes = {};
-        Object.keys(stateCounts).forEach(state => {
-          stateMinutes[state] = stateCounts[state] * 5;
-        });
-
-        return stateMinutes;
+        return stateTimes;
       };
 
       const fetchData = async () => {
@@ -442,7 +510,7 @@
               {/* 状態占有時間の円グラフ */}
               {stateOccupancy && (
                 <div className="bg-white rounded-lg shadow-lg p-6">
-                  <h2 className="text-xl font-bold mb-4 text-gray-800">🥧 状態別占有時間（集計期間：{data.length}件 ≈ {Math.round(data.length * 5 / 60)}時間）</h2>
+                  <h2 className="text-xl font-bold mb-4 text-gray-800">🥧 状態別占有時間（集計期間：{data.length}件 ≈ {Math.round((data.length - 1) * 5 / 60)}時間）</h2>
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div>
                       <StateOccupancyPieChart stateOccupancy={stateOccupancy} />
@@ -974,7 +1042,7 @@
                   label: function (context) {
                     const minutes = context.parsed;
                     const hours = Math.floor(minutes / 60);
-                    const mins = minutes % 60;
+                    const mins = Math.round(minutes % 60);
                     const total = dataValues.reduce((a, b) => a + b, 0);
                     const percentage = ((minutes / total) * 100).toFixed(1);
                     return `${context.label}: ${hours}時間${mins}分 (${percentage}%)`;
@@ -998,7 +1066,7 @@
     // 状態占有時間の詳細表示コンポーネント
     function StateOccupancyDetail({ label, minutes, color, totalMinutes }) {
       const hours = Math.floor(minutes / 60);
-      const mins = minutes % 60;
+      const mins = Math.round(minutes % 60);
       const percentage = totalMinutes > 0 ? ((minutes / totalMinutes) * 100).toFixed(1) : '0.0';
 
       return (
