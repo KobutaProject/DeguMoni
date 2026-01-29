@@ -2,7 +2,7 @@
   デグー環境モニタリングダッシュボード + 状態判定機能（差分表示版）+ 状態占有時間円グラフ
   作成日: 2025-01-18
   説明: Ambient APIからデータを取得してグラフ表示 + 5分間の増加量を数値表示 + 状態別占有時間の円グラフ
-  修正: 状態占有時間の計算精度を向上（実測値ベースの時間配分）
+  修正: 活動時間の計算を修正（MOTもSITと同じく100=5分で時間換算）
 -->
 <!DOCTYPE html>
 <html lang="ja">
@@ -33,7 +33,6 @@
       const [error, setError] = useState(null);
       const [updateKey, setUpdateKey] = useState(0);
 
-      // 健康記録関連のstate
       const [healthRecords, setHealthRecords] = useState([]);
       const [recordDate, setRecordDate] = useState(new Date().toISOString().split('T')[0]);
       const [weight, setWeight] = useState('');
@@ -44,7 +43,16 @@
       const READ_KEY = '73ff0a03269c1f35';
       const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbygafxILyUYiajSYjThZeIezQS5SLzodxgjkfnmRFcqBEUo_iRS4MCeSUmlHsvl8XinVw/exec';
 
-      // デグーの状態を判定する関数（5分間の差分で判定）
+      const getFecesConditionLabel = (condition) => {
+        const labels = {
+          'normal': '正常',
+          'soft': '軟便',
+          'hard': '硬い',
+          'diarrhea': '下痢'
+        };
+        return labels[condition] || condition;
+      };
+
       const judgeDeguState = (currentData, previousData) => {
         if (!previousData) {
           return {
@@ -62,21 +70,16 @@
 
         const states = [];
 
-        // 5分間の各センサーの差分を計算
-        // 注意: 日の変わり目で累積値がリセットされる場合、差分がマイナスになる
         let rotDiff = (currentData.d1 || 0) - (previousData.d1 || 0);
         let sitDiff = (currentData.d8 || 0) - (previousData.d8 || 0);
         let drkDiff = (currentData.d6 || 0) - (previousData.d6 || 0);
         let motDiff = (currentData.d7 || 0) - (previousData.d7 || 0);
         
-        // 日の変わり目でリセットされた場合（差分がマイナス）は0とする
-        // この期間のデータは信頼できないため、活動なしとして扱う
         if (rotDiff < 0) rotDiff = 0;
         if (sitDiff < 0) sitDiff = 0;
         if (drkDiff < 0) drkDiff = 0;
         if (motDiff < 0) motDiff = 0;
 
-        // 差分データを保存
         const diffs = {
           rot: rotDiff,
           sit: sitDiff,
@@ -84,63 +87,61 @@
           mot: motDiff
         };
 
-        // 時間配分の計算（5分 = 300秒 を100として計算）
+        const INTERVAL_MINUTES = 5;
+        const MAX_DRINKING_TIME = 2;
+        
         const timeAllocation = {
-          running: 0,   // 走行
-          eating: 0,    // 食事
-          drinking: 0,  // 飲水
-          active: 0,    // 活動
-          resting: 0    // 休息
+          running: 0,
+          eating: 0,
+          drinking: 0,
+          active: 0,
+          resting: 0
         };
 
-        const INTERVAL_MINUTES = 5;
-        const DRINKING_WEIGHT = 0.4; // 飲水のウエイト
-
-        // 食事時間の計算（sitDiffが実測値、100 = 5分）
+        // 時間換算可能な値を計算（100 = 5分）
+        let eatingTime = 0;
         if (sitDiff > 0) {
-          timeAllocation.eating = (sitDiff / 100) * INTERVAL_MINUTES;
+          eatingTime = (sitDiff / 100) * INTERVAL_MINUTES;
         }
 
-        // 活動時間の計算（motDiffが実測値、100 = 5分）
-        let rawActiveTime = 0;
+        let activeTime = 0;
         if (motDiff > 0) {
-          rawActiveTime = (motDiff / 100) * INTERVAL_MINUTES;
+          activeTime = (motDiff / 100) * INTERVAL_MINUTES;
         }
 
-        // 飲水時間の計算
-        if (drkDiff > 0) {
-          timeAllocation.drinking = INTERVAL_MINUTES * DRINKING_WEIGHT;
-        }
-
-        // 走行時間の計算
+        // 優先順位: 走行 > 食事 > 活動 > 飲水 > 休息
         if (rotDiff > 0) {
           // 走行している場合
-          let remainingTime = INTERVAL_MINUTES - timeAllocation.eating - timeAllocation.drinking;
+          let remainingTime = INTERVAL_MINUTES;
+          
+          // 1. 食事時間を配分
+          timeAllocation.eating = Math.min(eatingTime, remainingTime);
+          remainingTime -= timeAllocation.eating;
+          
+          // 2. 残りを走行に配分
           timeAllocation.running = Math.max(0, remainingTime);
           
-          // 活動時間は無視（走行に含まれる）
+          // 走行中は活動・飲水は無視
+          timeAllocation.drinking = 0;
           timeAllocation.active = 0;
         } else {
           // 走行していない場合
-          if (drkDiff > 0) {
-            // 飲水している場合
-            if (timeAllocation.eating > 0) {
-              // 食事もしている場合：食事を正として、残りを飲水とする
-              let remainingTime = INTERVAL_MINUTES - timeAllocation.eating;
-              timeAllocation.drinking = Math.min(timeAllocation.drinking, remainingTime);
-              
-              // さらに残った時間を活動に配分
-              remainingTime = INTERVAL_MINUTES - timeAllocation.eating - timeAllocation.drinking;
-              timeAllocation.active = Math.min(rawActiveTime, remainingTime);
-            } else {
-              // 食事していない場合：飲水を正として、残りを活動に配分
-              let remainingTime = INTERVAL_MINUTES - timeAllocation.drinking;
-              timeAllocation.active = Math.min(rawActiveTime, remainingTime);
-            }
-          } else {
-            // 飲水していない場合：食事と活動を配分
-            let remainingTime = INTERVAL_MINUTES - timeAllocation.eating;
-            timeAllocation.active = Math.min(rawActiveTime, remainingTime);
+          let remainingTime = INTERVAL_MINUTES;
+          
+          // 1. 食事時間を配分
+          timeAllocation.eating = Math.min(eatingTime, remainingTime);
+          remainingTime -= timeAllocation.eating;
+          
+          // 2. 活動時間を配分
+          if (activeTime > 0 && remainingTime > 0) {
+            timeAllocation.active = Math.min(activeTime, remainingTime);
+            remainingTime -= timeAllocation.active;
+          }
+          
+          // 3. 飲水時間を配分（最大2分）
+          if (drkDiff > 0 && remainingTime > 0) {
+            timeAllocation.drinking = Math.min(remainingTime, MAX_DRINKING_TIME);
+            remainingTime -= timeAllocation.drinking;
           }
         }
 
@@ -149,7 +150,6 @@
                         timeAllocation.drinking + timeAllocation.active;
         timeAllocation.resting = Math.max(0, INTERVAL_MINUTES - usedTime);
 
-        // 状態の表示（優先度順）
         if (rotDiff > 0) {
           states.push({
             label: '🏃 走行中',
@@ -200,7 +200,6 @@
           });
         }
 
-        // 優先度が最も高い状態を選択（数値が小さいほど優先度が高い）
         const primaryState = states.reduce((prev, current) => 
           prev.priority < current.priority ? prev : current
         ).stateKey;
@@ -208,7 +207,6 @@
         return { states, diffs, primaryState, timeAllocation };
       };
 
-      // 状態占有時間を計算する関数（改良版：実測値ベース）
       const calculateStateOccupancy = (dataArray) => {
         const stateTimes = {
           '走行中': 0,
@@ -218,9 +216,8 @@
           '休息中': 0
         };
 
-        // 各データポイントで状態を判定して時間を加算
         dataArray.forEach((current, index) => {
-          if (index === 0) return; // 最初のデータはスキップ（前データがない）
+          if (index === 0) return;
           
           const previous = dataArray[index - 1];
           const judgment = judgeDeguState(current, previous);
@@ -295,7 +292,6 @@
         }
       };
 
-      // 健康記録を取得
       const fetchHealthRecords = async () => {
         try {
           const response = await fetch(GOOGLE_SCRIPT_URL);
@@ -307,7 +303,6 @@
         }
       };
 
-      // 健康記録を保存
       const saveHealthRecord = async () => {
         if (!weight) {
           alert('体重を入力してください');
@@ -334,7 +329,6 @@
           setFecesCondition('');
           setMemo('');
 
-          // 再読み込み
           setTimeout(() => fetchHealthRecords(), 1000);
         } catch (error) {
           console.error('❌ 保存エラー:', error);
@@ -391,19 +385,16 @@
         );
       }
 
-      // 最新データとその1つ前のデータを取得
       const previousData = data.length >= 2 ? data[data.length - 2] : null;
       const judgmentResult = latestData ? judgeDeguState(latestData, previousData) : { states: [], diffs: null };
       const deguStates = judgmentResult.states;
       const sensorDiffs = judgmentResult.diffs;
 
-      // 状態占有時間を計算
       const stateOccupancy = data.length > 0 ? calculateStateOccupancy(data) : null;
 
       return (
         <div key={updateKey} className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
           <div className="max-w-7xl mx-auto">
-            {/* ヘッダー */}
             <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
@@ -445,9 +436,7 @@
               </div>
             </div>
 
-            {/* デグーの状態表示セクション + 状態占有時間の円グラフ */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-              {/* デグーの現在の状態 */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">🐹 デグーの現在の状態（過去5分間の活動）</h2>
                 <div className="flex flex-wrap gap-3 mb-3">
@@ -461,7 +450,6 @@
                   判定期間: {previousData?.fullTime || '--'} → {latestData?.fullTime || '--'}
                 </div>
 
-                {/* 過去5分間の変化を表示 */}
                 {sensorDiffs && (
                   <div className="mt-4 p-4 bg-gray-50 rounded-lg">
                     <p className="font-semibold mb-3 text-gray-800">過去5分間の変化:</p>
@@ -507,7 +495,6 @@
                 )}
               </div>
 
-              {/* 状態占有時間の円グラフ */}
               {stateOccupancy && (
                 <div className="bg-white rounded-lg shadow-lg p-6">
                   <h2 className="text-xl font-bold mb-4 text-gray-800">🥧 状態別占有時間（集計期間：{data.length}件 ≈ {Math.round((data.length - 1) * 5 / 60)}時間）</h2>
@@ -528,49 +515,47 @@
               )}
             </div>
 
-            {/* 最新値表示 - 6つのボックス */}
             {latestData && (
               <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
                 <div className="bg-white rounded-lg shadow p-4">
                   <div className="text-sm text-gray-500 mb-1">温度</div>
-                  <div className="text-3xl font-bold text-orange-600">{latestData.d3}°C</div>
+                  <div className="text-3xl font-bold text-orange-600">{latestData.d3?.toFixed(1)}°C</div>
                   <div className="text-xs text-gray-400 mt-1">THU-TEMP</div>
                 </div>
                 <div className="bg-white rounded-lg shadow p-4">
                   <div className="text-sm text-gray-500 mb-1">湿度</div>
-                  <div className="text-3xl font-bold text-blue-600">{latestData.d4}%</div>
+                  <div className="text-3xl font-bold text-blue-600">{latestData.d4?.toFixed(1)}%</div>
                   <div className="text-xs text-gray-400 mt-1">THU-HUM</div>
                 </div>
                 <div className="bg-white rounded-lg shadow p-4">
                   <div className="text-sm text-gray-500 mb-1">走行距離</div>
-                  <div className="text-3xl font-bold text-red-600">{latestData.d1}</div>
+                  <div className="text-3xl font-bold text-red-600">{latestData.d1?.toFixed(1)}</div>
                   <div className="text-xs text-gray-400 mt-1">ROT-ACUM</div>
                 </div>
                 <div className="bg-white rounded-lg shadow p-4">
                   <div className="text-sm text-gray-500 mb-1">飲水累積</div>
-                  <div className="text-3xl font-bold text-cyan-600">{latestData.d6}</div>
+                  <div className="text-3xl font-bold text-cyan-600">{latestData.d6?.toFixed(1)}</div>
                   <div className="text-xs text-gray-400 mt-1">DRK-ACUM</div>
                 </div>
                 <div className="bg-white rounded-lg shadow p-4">
                   <div className="text-sm text-gray-500 mb-1">MOT</div>
-                  <div className="text-3xl font-bold text-purple-600">{latestData.d7}</div>
+                  <div className="text-3xl font-bold text-purple-600">{latestData.d7?.toFixed(0)}</div>
                   <div className="text-xs text-gray-400 mt-1">MOT-ACUM</div>
                 </div>
                 <div className="bg-white rounded-lg shadow p-4">
                   <div className="text-sm text-gray-500 mb-1">SIT</div>
-                  <div className="text-3xl font-bold text-green-600">{latestData.d8}</div>
+                  <div className="text-3xl font-bold text-green-600">{latestData.d8?.toFixed(1)}</div>
                   <div className="text-xs text-gray-400 mt-1">KUSA-ACUM</div>
                 </div>
               </div>
             )}
 
-            {/* データサマリー */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">🌡️ 温湿度推移</h2>
                 <div className="space-y-3">
-                  <DataRow label="現在の温度" value={`${latestData?.d3}°C`} trend={calculateTrend(data, 'd3')} />
-                  <DataRow label="現在の湿度" value={`${latestData?.d4}%`} trend={calculateTrend(data, 'd4')} />
+                  <DataRow label="現在の温度" value={`${latestData?.d3?.toFixed(1)}°C`} trend={calculateTrend(data, 'd3')} />
+                  <DataRow label="現在の湿度" value={`${latestData?.d4?.toFixed(1)}%`} trend={calculateTrend(data, 'd4')} />
                   <DataRow label="平均温度" value={`${calculateAverage(data, 'd3')}°C`} />
                   <DataRow label="平均湿度" value={`${calculateAverage(data, 'd4')}%`} />
                 </div>
@@ -579,18 +564,16 @@
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">🎡 活動サマリー</h2>
                 <div className="space-y-3">
-                  <DataRow label="回転速度" value={latestData?.d2} trend={calculateTrend(data, 'd2')} />
-                  <DataRow label="走行距離" value={latestData?.d1} />
-                  <DataRow label="飲水累積" value={latestData?.d6} />
-                  <DataRow label="MOT累積" value={latestData?.d7} />
-                  <DataRow label="SIT累積" value={latestData?.d8} />
+                  <DataRow label="回転速度" value={latestData?.d2?.toFixed(1)} trend={calculateTrend(data, 'd2')} />
+                  <DataRow label="走行距離" value={latestData?.d1?.toFixed(1)} />
+                  <DataRow label="飲水累積" value={latestData?.d6?.toFixed(1)} />
+                  <DataRow label="MOT累積" value={latestData?.d7?.toFixed(0)} />
+                  <DataRow label="SIT累積" value={latestData?.d8?.toFixed(1)} />
                 </div>
               </div>
             </div>
 
-            {/* グラフエリア */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-              {/* 温湿度グラフ */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">📈 温度・湿度グラフ</h2>
                 <ChartComponent
@@ -603,7 +586,6 @@
                 />
               </div>
 
-              {/* ROTグラフ */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">📈 回転活動グラフ</h2>
                 <ChartComponent
@@ -616,7 +598,6 @@
                 />
               </div>
 
-              {/* DRKグラフ */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">📈 飲水累積グラフ</h2>
                 <ChartComponent
@@ -628,7 +609,6 @@
                 />
               </div>
 
-              {/* MOTグラフ */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">📈 MOT (Motion) グラフ</h2>
                 <ChartComponent
@@ -640,7 +620,6 @@
                 />
               </div>
 
-              {/* SITグラフ */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">📈 SIT (She is there) グラフ</h2>
                 <ChartComponent
@@ -652,14 +631,12 @@
                 />
               </div>
 
-              {/* 体重グラフ */}
               <div className="bg-white rounded-lg shadow-lg p-6">
                 <h2 className="text-xl font-bold mb-4 text-gray-800">📈 体重推移グラフ</h2>
                 <HealthChartComponent healthRecords={healthRecords} />
               </div>
             </div>
 
-            {/* データテーブル */}
             <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
               <h2 className="text-xl font-bold mb-4 text-gray-800">📊 最新データ（20件）</h2>
               <div className="overflow-x-auto">
@@ -671,7 +648,7 @@
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">湿度</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">回転速度</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">走行距離</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">飲水</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">飲水累積</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">MOT</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">SIT</th>
                     </tr>
@@ -680,13 +657,13 @@
                     {data.slice(-20).reverse().map((row, idx) => (
                       <tr key={idx} className="hover:bg-gray-50">
                         <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.time}</td>
-                        <td className="px-4 py-2 whitespace-nowrap text-sm font-semibold text-orange-600">{row.d3}°C</td>
-                        <td className="px-4 py-2 whitespace-nowrap text-sm font-semibold text-blue-600">{row.d4}%</td>
-                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d2}</td>
-                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d1}</td>
-                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d5}</td>
-                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d7}</td>
-                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d8}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm font-semibold text-orange-600">{row.d3?.toFixed(1)}°C</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm font-semibold text-blue-600">{row.d4?.toFixed(1)}%</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d2?.toFixed(1)}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d1?.toFixed(1)}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d6?.toFixed(1)}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d7?.toFixed(0)}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{row.d8?.toFixed(1)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -694,14 +671,11 @@
               </div>
             </div>
 
-            {/* 健康記録入力フォーム - ページ最下部に移動 */}
             <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
               <h2 className="text-xl font-bold mb-4 text-gray-800">📝 健康記録を追加</h2>
               <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    日付
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">日付</label>
                   <input
                     type="date"
                     value={recordDate}
@@ -711,9 +685,7 @@
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    体重 (g)
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">体重 (g)</label>
                   <input
                     type="number"
                     value={weight}
@@ -724,9 +696,7 @@
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    糞の状態
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">糞の状態</label>
                   <select
                     value={fecesCondition}
                     onChange={(e) => setFecesCondition(e.target.value)}
@@ -741,9 +711,7 @@
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    メモ
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">メモ</label>
                   <input
                     type="text"
                     value={memo}
@@ -763,7 +731,6 @@
                 </div>
               </div>
 
-              {/* 健康記録テーブル */}
               {healthRecords.length > 0 && (
                 <div className="mt-6">
                   <h3 className="text-lg font-bold mb-3 text-gray-800">📊 記録履歴（最新10件）</h3>
@@ -787,7 +754,7 @@
                               {record.weight}g
                             </td>
                             <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">
-                              {record.fecesCondition}
+                              {getFecesConditionLabel(record.fecesCondition)}
                             </td>
                             <td className="px-4 py-2 text-sm text-gray-900">
                               {record.memo}
@@ -811,20 +778,15 @@
       );
     }
 
-    // Chart.jsコンポーネント
     function ChartComponent({ data, datasets, dual }) {
       const chartRef = useRef(null);
       const chartInstance = useRef(null);
 
       useEffect(() => {
         if (!chartRef.current || !data || data.length === 0) return;
-
-        if (chartInstance.current) {
-          chartInstance.current.destroy();
-        }
+        if (chartInstance.current) chartInstance.current.destroy();
 
         const ctx = chartRef.current.getContext('2d');
-
         const chartDatasets = datasets.map(ds => ({
           label: ds.label,
           data: data.map(item => item[ds.key]),
@@ -835,18 +797,8 @@
         }));
 
         const scales = {
-          x: {
-            display: true,
-            ticks: {
-              maxRotation: 45,
-              minRotation: 45
-            }
-          },
-          y: {
-            type: 'linear',
-            display: true,
-            position: 'left'
-          }
+          x: { display: true, ticks: { maxRotation: 45, minRotation: 45 } },
+          y: { type: 'linear', display: true, position: 'left' }
         };
 
         if (dual) {
@@ -854,31 +806,20 @@
             type: 'linear',
             display: true,
             position: 'right',
-            grid: {
-              drawOnChartArea: false
-            }
+            grid: { drawOnChartArea: false }
           };
         }
 
         chartInstance.current = new Chart(ctx, {
           type: 'line',
-          data: {
-            labels: data.map(item => item.timeOnly),
-            datasets: chartDatasets
-          },
+          data: { labels: data.map(item => item.timeOnly), datasets: chartDatasets },
           options: {
             responsive: true,
             maintainAspectRatio: true,
             aspectRatio: 2,
-            interaction: {
-              mode: 'index',
-              intersect: false
-            },
+            interaction: { mode: 'index', intersect: false },
             plugins: {
-              legend: {
-                display: true,
-                position: 'top'
-              },
+              legend: { display: true, position: 'top' },
               tooltip: {
                 callbacks: {
                   title: function (context) {
@@ -892,33 +833,28 @@
         });
 
         return () => {
-          if (chartInstance.current) {
-            chartInstance.current.destroy();
-          }
+          if (chartInstance.current) chartInstance.current.destroy();
         };
       }, [data, datasets, dual]);
 
       return <canvas ref={chartRef}></canvas>;
     }
 
-    // 健康記録グラフコンポーネント
     function HealthChartComponent({ healthRecords }) {
       const chartRef = useRef(null);
       const chartInstance = useRef(null);
 
       useEffect(() => {
         if (!chartRef.current || !healthRecords || healthRecords.length === 0) return;
-
-        if (chartInstance.current) {
-          chartInstance.current.destroy();
-        }
+        if (chartInstance.current) chartInstance.current.destroy();
 
         const ctx = chartRef.current.getContext('2d');
+        const sortedRecords = [...healthRecords].sort((a, b) => new Date(a.date) - new Date(b.date));
 
-        // 日付でソート
-        const sortedRecords = [...healthRecords].sort((a, b) =>
-          new Date(a.date) - new Date(b.date)
-        );
+        const getFecesLabel = (condition) => {
+          const labels = { 'normal': '正常', 'soft': '軟便', 'hard': '硬い', 'diarrhea': '下痢' };
+          return labels[condition] || condition;
+        };
 
         chartInstance.current = new Chart(ctx, {
           type: 'line',
@@ -938,41 +874,24 @@
             responsive: true,
             maintainAspectRatio: true,
             aspectRatio: 2,
-            interaction: {
-              mode: 'index',
-              intersect: false
-            },
+            interaction: { mode: 'index', intersect: false },
             plugins: {
-              legend: {
-                display: true,
-                position: 'top'
-              },
+              legend: { display: true, position: 'top' },
               tooltip: {
                 callbacks: {
                   afterLabel: function (context) {
                     const record = sortedRecords[context.dataIndex];
-                    return [
-                      `糞: ${record.fecesCondition}`,
-                      record.memo ? `メモ: ${record.memo}` : ''
-                    ].filter(Boolean);
+                    return [`糞: ${getFecesLabel(record.fecesCondition)}`, record.memo ? `メモ: ${record.memo}` : ''].filter(Boolean);
                   }
                 }
               }
             },
-            scales: {
-              y: {
-                type: 'linear',
-                display: true,
-                position: 'left'
-              }
-            }
+            scales: { y: { type: 'linear', display: true, position: 'left' } }
           }
         });
 
         return () => {
-          if (chartInstance.current) {
-            chartInstance.current.destroy();
-          }
+          if (chartInstance.current) chartInstance.current.destroy();
         };
       }, [healthRecords]);
 
@@ -987,20 +906,15 @@
       return <canvas ref={chartRef}></canvas>;
     }
 
-    // 状態占有時間の円グラフコンポーネント
     function StateOccupancyPieChart({ stateOccupancy }) {
       const chartRef = useRef(null);
       const chartInstance = useRef(null);
 
       useEffect(() => {
         if (!chartRef.current || !stateOccupancy) return;
-
-        if (chartInstance.current) {
-          chartInstance.current.destroy();
-        }
+        if (chartInstance.current) chartInstance.current.destroy();
 
         const ctx = chartRef.current.getContext('2d');
-
         const labels = ['🏃 走行中', '🍽️ 食事中', '💧 飲水中', '🐹 活動中', '😴 休息中'];
         const dataValues = [
           stateOccupancy['走行中'],
@@ -1010,11 +924,11 @@
           stateOccupancy['休息中']
         ];
         const colors = [
-          'rgb(168, 85, 247)',   // 走行中 - purple
-          'rgb(249, 115, 22)',   // 食事中 - orange
-          'rgb(6, 182, 212)',    // 飲水中 - cyan
-          'rgb(34, 197, 94)',    // 活動中 - green
-          'rgb(107, 114, 128)'   // 休息中 - gray
+          'rgb(168, 85, 247)',
+          'rgb(249, 115, 22)',
+          'rgb(6, 182, 212)',
+          'rgb(34, 197, 94)',
+          'rgb(107, 114, 128)'
         ];
 
         chartInstance.current = new Chart(ctx, {
@@ -1033,10 +947,7 @@
             maintainAspectRatio: true,
             aspectRatio: 1.5,
             plugins: {
-              legend: {
-                display: true,
-                position: 'bottom'
-              },
+              legend: { display: true, position: 'bottom' },
               tooltip: {
                 callbacks: {
                   label: function (context) {
@@ -1054,16 +965,13 @@
         });
 
         return () => {
-          if (chartInstance.current) {
-            chartInstance.current.destroy();
-          }
+          if (chartInstance.current) chartInstance.current.destroy();
         };
       }, [stateOccupancy]);
 
       return <canvas ref={chartRef}></canvas>;
     }
 
-    // 状態占有時間の詳細表示コンポーネント
     function StateOccupancyDetail({ label, minutes, color, totalMinutes }) {
       const hours = Math.floor(minutes / 60);
       const mins = Math.round(minutes % 60);
