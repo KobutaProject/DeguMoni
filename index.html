@@ -3,6 +3,7 @@
   作成日: 2025-01-18
   説明: Ambient APIからデータを取得してグラフ表示 + 5分間の増加量を数値表示 + 状態別占有時間の円グラフ
   修正: 活動時間の計算を修正（MOTもSITと同じく100=5分で時間換算）
+  追加: Ambientサーバーの稼働状態チェック（接続エラー時は告知バナー表示＋取得済みデータは維持）
 -->
 <!DOCTYPE html>
 <html lang="ja">
@@ -32,6 +33,11 @@
       const [dataRange, setDataRange] = useState(100);
       const [error, setError] = useState(null);
       const [updateKey, setUpdateKey] = useState(0);
+
+      // Ambientサーバーの稼働状態: 'checking'（確認中） | 'active'（稼働中） | 'error'（接続エラー）
+      const [serverStatus, setServerStatus] = useState('checking');
+      // 最後にデータ取得に成功した時刻
+      const [lastSuccessTime, setLastSuccessTime] = useState(null);
 
       const [healthRecords, setHealthRecords] = useState([]);
       const [recordDate, setRecordDate] = useState(new Date().toISOString().split('T')[0]);
@@ -284,10 +290,15 @@
             console.log('✅ データ取得完了:', formattedData.length, '件');
             console.log('📊 最新:', formattedData[formattedData.length - 1].fullTime);
           }
+          // ここまで到達できた = Ambientサーバーは正常に応答している
+          setServerStatus('active');
+          setLastSuccessTime(new Date());
           setLoading(false);
         } catch (error) {
           console.error('❌ エラー:', error.message);
           setError(error.message);
+          // 取得に失敗しても data はクリアしない（最後に取れたデータを表示し続ける）
+          setServerStatus('error');
           setLoading(false);
         }
       };
@@ -350,7 +361,8 @@
         return () => clearInterval(interval);
       }, [dataRange]);
 
-      if (loading) {
+      // 全画面ローディングは「まだ一度もデータが取れていない初回」のみ
+      if (loading && data.length === 0) {
         return (
           <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
             <div className="text-center">
@@ -361,7 +373,9 @@
         );
       }
 
-      if (error) {
+      // 全画面エラーは「まだ一度もデータが取れていない初回」のみ。
+      // 既に取得済みデータがある場合は本体を表示し、上部のバナーで告知する。
+      if (error && data.length === 0) {
         return (
           <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
             <div className="bg-white rounded-lg shadow-lg p-8 max-w-md">
@@ -395,6 +409,34 @@
       return (
         <div key={updateKey} className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
           <div className="max-w-7xl mx-auto">
+            {serverStatus === 'error' && (
+              <div className="bg-red-50 border-2 border-red-300 rounded-lg shadow-lg p-4 mb-6">
+                <div className="flex items-start gap-3">
+                  <span className="text-2xl">⚠️</span>
+                  <div className="flex-1">
+                    <p className="font-bold text-red-800 mb-1">Ambientサーバーに接続できません</p>
+                    <p className="text-sm text-red-700">
+                      データの取得に失敗しました。下に表示中の内容は、最後に取得できたデータです。
+                      サーバーが復旧すると自動で更新を再開します（3分毎）。
+                    </p>
+                    <p className="text-xs text-red-600 mt-2">
+                      最終取得成功: {lastSuccessTime ? lastSuccessTime.toLocaleString('ja-JP') : '取得実績なし'}
+                      {error && <span> ／ 詳細: {error}</span>}
+                    </p>
+                    <button
+                      onClick={() => {
+                        console.log('🔘 バナーから再試行');
+                        fetchData();
+                        fetchHealthRecords();
+                      }}
+                      className="mt-3 px-4 py-2 bg-red-600 text-white text-sm rounded-lg hover:bg-red-700 transition-colors"
+                    >
+                      🔄 再試行
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
@@ -404,6 +446,19 @@
                   <p className="text-gray-600">チャンネル: DeguMoni_Integrated (ID: {CHANNEL_ID})</p>
                 </div>
                 <div className="text-right">
+                  <div className="flex items-center justify-start md:justify-end gap-2 mb-2">
+                    <span className={`inline-block w-2.5 h-2.5 rounded-full ${
+                      serverStatus === 'active' ? 'bg-green-500' :
+                      serverStatus === 'error' ? 'bg-red-500' : 'bg-gray-400 animate-pulse'
+                    }`}></span>
+                    <span className={`text-sm font-semibold ${
+                      serverStatus === 'active' ? 'text-green-600' :
+                      serverStatus === 'error' ? 'text-red-600' : 'text-gray-500'
+                    }`}>
+                      {serverStatus === 'active' ? 'Ambient稼働中' :
+                       serverStatus === 'error' ? 'Ambient接続エラー' : '状態を確認中...'}
+                    </span>
+                  </div>
                   <div className="text-sm text-gray-500 mb-2">
                     最終更新: {lastUpdate?.toLocaleString('ja-JP')}
                   </div>
