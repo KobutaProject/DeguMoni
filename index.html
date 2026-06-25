@@ -253,14 +253,25 @@
 
           console.log('🔄 データ取得開始:', new Date().toLocaleTimeString());
 
-          const response = await fetch(apiUrl, {
-            method: 'GET',
-            mode: 'cors',
-            cache: 'no-store',
-            headers: {
-              'Accept': 'application/json'
-            }
-          });
+          // ウォッチドッグ: 15秒応答が無ければ接続を打ち切ってエラー扱いにする
+          // （Ambientが「拒否も応答もせず黙り込む」とき、くるくるで永久に固まるのを防ぐ）
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+          let response;
+          try {
+            response = await fetch(apiUrl, {
+              method: 'GET',
+              mode: 'cors',
+              cache: 'no-store',
+              headers: {
+                'Accept': 'application/json'
+              },
+              signal: controller.signal
+            });
+          } finally {
+            clearTimeout(timeoutId);
+          }
 
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -298,8 +309,12 @@
           setLastSuccessTime(new Date());
           setLoading(false);
         } catch (error) {
-          console.error('❌ エラー:', error.message);
-          setError(error.message);
+          // タイムアウト（AbortError）は分かりやすい文言に置き換える
+          const msg = (error.name === 'AbortError')
+            ? '応答がタイムアウトしました（Ambientサーバーが応答していない可能性があります）'
+            : error.message;
+          console.error('❌ エラー:', msg);
+          setError(msg);
           // 取得に失敗しても data はクリアしない（最後に取れたデータを表示し続ける）
           setServerStatus('error');
           setLoading(false);
