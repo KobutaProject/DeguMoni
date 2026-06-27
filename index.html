@@ -29,10 +29,26 @@
     const { useState, useEffect, useRef } = React;
 
     function DeguMonitoringDashboard() {
-      const [data, setData] = useState([]);
-      const [latestData, setLatestData] = useState(null);
-      const [loading, setLoading] = useState(true);
-      const [lastUpdate, setLastUpdate] = useState(null);
+      const APP_VERSION = 'v1.0.0';
+      const CACHE_KEY = 'deguMoni_lastData_v1';
+
+      // 起動時：前回保存したデータ（ブラウザの不揮発領域 localStorage）を読み出す。
+      // これにより、起動時にAmbientが落ちていても「最後に取れた姿」をすぐ表示できる。
+      const loadCache = () => {
+        try {
+          const raw = localStorage.getItem(CACHE_KEY);
+          return raw ? JSON.parse(raw) : null;
+        } catch (e) {
+          return null;
+        }
+      };
+      const cached = loadCache();
+
+      const [data, setData] = useState(cached?.data || []);
+      const [latestData, setLatestData] = useState(cached?.latestData || null);
+      // キャッシュがあれば、くるくる（loading）を出さずに即表示する
+      const [loading, setLoading] = useState(cached ? false : true);
+      const [lastUpdate, setLastUpdate] = useState(cached?.lastSuccessTime ? new Date(cached.lastSuccessTime) : null);
       const [dataRange, setDataRange] = useState(100);
       const [error, setError] = useState(null);
       const [updateKey, setUpdateKey] = useState(0);
@@ -40,7 +56,7 @@
       // Ambientサーバーの稼働状態: 'checking'（確認中） | 'active'（稼働中） | 'error'（接続エラー）
       const [serverStatus, setServerStatus] = useState('checking');
       // 最後にデータ取得に成功した時刻
-      const [lastSuccessTime, setLastSuccessTime] = useState(null);
+      const [lastSuccessTime, setLastSuccessTime] = useState(cached?.lastSuccessTime ? new Date(cached.lastSuccessTime) : null);
 
       const [healthRecords, setHealthRecords] = useState([]);
       const [recordDate, setRecordDate] = useState(new Date().toISOString().split('T')[0]);
@@ -299,8 +315,19 @@
 
             setData([...formattedData]);
             setLatestData({ ...formattedData[formattedData.length - 1] });
-            setLastUpdate(new Date());
+            const _now = new Date();
+            setLastUpdate(_now);
             setUpdateKey(prev => prev + 1);
+            // 不揮発領域へ保存（次回起動時、Ambientが落ちていてもこれを表示する）
+            try {
+              localStorage.setItem(CACHE_KEY, JSON.stringify({
+                data: formattedData,
+                latestData: formattedData[formattedData.length - 1],
+                lastSuccessTime: _now.toISOString()
+              }));
+            } catch (e) {
+              console.warn('キャッシュ保存に失敗:', e);
+            }
             console.log('✅ データ取得完了:', formattedData.length, '件');
             console.log('📊 最新:', formattedData[formattedData.length - 1].fullTime);
           }
@@ -400,8 +427,10 @@
               <div className="text-red-600 text-xl font-bold mb-4">⚠️ エラー</div>
               <div className="text-gray-700 mb-4">{error}</div>
               <div className="text-sm text-gray-500 mb-4">
-                ブラウザがAmbient APIへの直接アクセスをブロックしている可能性があります。
+                まだ一度もデータを取得できていないため、表示できる内容がありません。
+                Ambientが復旧すると自動で取得を再開します（3分毎）。
               </div>
+              <div className="text-xs text-gray-400 mb-4">{APP_VERSION}</div>
               <button
                 onClick={() => {
                   setLoading(true);
@@ -845,6 +874,7 @@
               <p className="text-sm text-gray-600">
                 🔄 自動更新: 3分毎 | データ件数: {data.length}件 | 健康記録: {healthRecords.length}件
               </p>
+              <p className="text-xs text-gray-400 mt-1">{APP_VERSION}</p>
             </div>
           </div>
         </div>
