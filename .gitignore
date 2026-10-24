@@ -1,0 +1,7 @@
+# いったん全部無視
+/*
+# 上げるものだけ指名
+!/.gitignore
+!/index.html
+!/README.md
+!/test.html
