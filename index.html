@@ -5,6 +5,10 @@
   修正: 活動時間の計算を修正（MOTもSITと同じく100=5分で時間換算）
   追加: サーバーの稼働状態チェック（接続エラー時は告知バナー表示＋取得済みデータは維持）
   2026-08-08: センサデータの取得元をAmbient APIからGoogleスプレッドシート(Apps Script doGet)に切替
+  2026-11-17 v1.1.0: 状態別占有時間の集計を「直近N件」から「本日0:00〜最新レコード」に変更
+                     ・0:00時点を累積0の基準点とする（センサ側が0:00でリセットするため）
+                     ・区間長を固定5分から実タイムスタンプ差に変更（送信抜けで食事等が切り捨てられていた）
+                     ・円グラフ用に最大300件を別途取得（グラフ用の件数プルダウンとは独立） ★
 -->
 <!DOCTYPE html>
 <html lang="ja">
@@ -30,7 +34,7 @@
     const { useState, useEffect, useRef } = React;
 
     function DeguMonitoringDashboard() {
-      const APP_VERSION = 'v1.0.0';
+      const APP_VERSION = 'v1.1.0';
       const CACHE_KEY = 'deguMoni_lastData_v1';
 
       // 起動時：前回保存したデータ（ブラウザの不揮発領域 localStorage）を読み出す。
@@ -46,6 +50,9 @@
       const cached = loadCache();
 
       const [data, setData] = useState(cached?.data || []);
+      // 円グラフ（本日0:00〜）用。グラフ用 data より多めに取得した全件
+      const [pieData, setPieData] = useState(cached?.pieData || cached?.data || []);
+      const PIE_FETCH_N = 300;  // 5分間隔で約25時間分。本日0:00〜を必ず含む件数
       const [latestData, setLatestData] = useState(cached?.latestData || null);
       // キャッシュがあれば、くるくる（loading）を出さずに即表示する
       const [loading, setLoading] = useState(cached ? false : true);
@@ -80,7 +87,7 @@
         return labels[condition] || condition;
       };
 
-      const judgeDeguState = (currentData, previousData) => {
+      const judgeDeguState = (currentData, previousData, intervalMinutes = 5) => {
         if (!previousData) {
           return {
             states: [{
@@ -101,7 +108,7 @@
         let sitDiff = (currentData.d8 || 0) - (previousData.d8 || 0);
         let drkDiff = (currentData.d6 || 0) - (previousData.d6 || 0);
         let motDiff = (currentData.d7 || 0) - (previousData.d7 || 0);
-        
+
         if (rotDiff < 0) rotDiff = 0;
         if (sitDiff < 0) sitDiff = 0;
         if (drkDiff < 0) drkDiff = 0;
@@ -114,9 +121,11 @@
           mot: motDiff
         };
 
-        const INTERVAL_MINUTES = 5;
+        // 区間長（分）。既定5分。占有時間の集計では実タイムスタンプ差を渡す
+        const INTERVAL_MINUTES = intervalMinutes;
         const MAX_DRINKING_TIME = 2;
-        
+        const COUNT_TO_MIN = 5 / 100;  // センサ換算: 100カウント = 5分（区間長とは無関係の固定値）
+
         const timeAllocation = {
           running: 0,
           eating: 0,
@@ -128,43 +137,43 @@
         // 時間換算可能な値を計算（100 = 5分）
         let eatingTime = 0;
         if (sitDiff > 0) {
-          eatingTime = (sitDiff / 100) * INTERVAL_MINUTES;
+          eatingTime = sitDiff * COUNT_TO_MIN;
         }
 
         let activeTime = 0;
         if (motDiff > 0) {
-          activeTime = (motDiff / 100) * INTERVAL_MINUTES;
+          activeTime = motDiff * COUNT_TO_MIN;
         }
 
         // 優先順位: 走行 > 食事 > 活動 > 飲水 > 休息
         if (rotDiff > 0) {
           // 走行している場合
           let remainingTime = INTERVAL_MINUTES;
-          
+
           // 1. 食事時間を配分
           timeAllocation.eating = Math.min(eatingTime, remainingTime);
           remainingTime -= timeAllocation.eating;
-          
+
           // 2. 残りを走行に配分
           timeAllocation.running = Math.max(0, remainingTime);
-          
+
           // 走行中は活動・飲水は無視
           timeAllocation.drinking = 0;
           timeAllocation.active = 0;
         } else {
           // 走行していない場合
           let remainingTime = INTERVAL_MINUTES;
-          
+
           // 1. 食事時間を配分
           timeAllocation.eating = Math.min(eatingTime, remainingTime);
           remainingTime -= timeAllocation.eating;
-          
+
           // 2. 活動時間を配分
           if (activeTime > 0 && remainingTime > 0) {
             timeAllocation.active = Math.min(activeTime, remainingTime);
             remainingTime -= timeAllocation.active;
           }
-          
+
           // 3. 飲水時間を配分（最大2分）
           if (drkDiff > 0 && remainingTime > 0) {
             timeAllocation.drinking = Math.min(remainingTime, MAX_DRINKING_TIME);
@@ -173,8 +182,8 @@
         }
 
         // 休息時間の計算（残り時間）
-        const usedTime = timeAllocation.running + timeAllocation.eating + 
-                        timeAllocation.drinking + timeAllocation.active;
+        const usedTime = timeAllocation.running + timeAllocation.eating +
+          timeAllocation.drinking + timeAllocation.active;
         timeAllocation.resting = Math.max(0, INTERVAL_MINUTES - usedTime);
 
         if (rotDiff > 0) {
@@ -227,14 +236,17 @@
           });
         }
 
-        const primaryState = states.reduce((prev, current) => 
+        const primaryState = states.reduce((prev, current) =>
           prev.priority < current.priority ? prev : current
         ).stateKey;
 
         return { states, diffs, primaryState, timeAllocation };
       };
 
-      const calculateStateOccupancy = (dataArray) => {
+      // 本日0:00〜最新レコードまでの状態別占有時間（分）
+      // ・0:00時点は全累積0とみなす（センサ側が0:00でリセットするため）
+      // ・各区間の長さは実タイムスタンプ差。送信抜け（15分・45分など）でも増分を切り捨てない
+      const calculateTodayOccupancy = (dataArray) => {
         const stateTimes = {
           '走行中': 0,
           '食事中': 0,
@@ -243,22 +255,38 @@
           '休息中': 0
         };
 
-        dataArray.forEach((current, index) => {
-          if (index === 0) return;
-          
-          const previous = dataArray[index - 1];
-          const judgment = judgeDeguState(current, previous);
-          
-          if (judgment.timeAllocation) {
-            stateTimes['走行中'] += judgment.timeAllocation.running;
-            stateTimes['食事中'] += judgment.timeAllocation.eating;
-            stateTimes['飲水中'] += judgment.timeAllocation.drinking;
-            stateTimes['活動中'] += judgment.timeAllocation.active;
-            stateTimes['休息中'] += judgment.timeAllocation.resting;
+        const now = new Date();
+        const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+        // 0:00ちょうどのレコードは前日の最終値（日締め）なので含めない
+        const todays = dataArray.filter(r => new Date(r.created) > dayStart);
+        if (todays.length === 0) {
+          return { stateTimes, start: dayStart, end: null, count: 0, minutes: 0 };
+        }
+
+        // 0:00の基準点（累積0）
+        let previous = { d1: 0, d6: 0, d7: 0, d8: 0, created: dayStart.toISOString() };
+
+        todays.forEach(current => {
+          // 累積が途中で減った＝リセット（再起動など）とみなし、基準を0に戻す
+          if (['d1', 'd6', 'd7', 'd8'].some(k => (current[k] || 0) < (previous[k] || 0))) {
+            previous = { d1: 0, d6: 0, d7: 0, d8: 0, created: previous.created };
           }
+          const dt = (new Date(current.created) - new Date(previous.created)) / 60000;
+          if (dt > 0) {
+            const judgment = judgeDeguState(current, previous, dt);
+            if (judgment.timeAllocation) {
+              stateTimes['走行中'] += judgment.timeAllocation.running;
+              stateTimes['食事中'] += judgment.timeAllocation.eating;
+              stateTimes['飲水中'] += judgment.timeAllocation.drinking;
+              stateTimes['活動中'] += judgment.timeAllocation.active;
+              stateTimes['休息中'] += judgment.timeAllocation.resting;
+            }
+          }
+          previous = current;
         });
 
-        return stateTimes;
+        const end = new Date(todays[todays.length - 1].created);
+        return { stateTimes, start: dayStart, end, count: todays.length, minutes: (end - dayStart) / 60000 };
       };
 
       const fetchData = async () => {
@@ -267,7 +295,8 @@
 
           const timestamp = Date.now();
           const random = Math.random().toString(36).substring(7);
-          const apiUrl = `${SENSOR_SHEET_URL}?n=${dataRange}&_t=${timestamp}&_r=${random}`;
+          const fetchN = Math.max(dataRange, PIE_FETCH_N);  // グラフ用と円グラフ用をまとめて1回で取得
+          const apiUrl = `${SENSOR_SHEET_URL}?n=${fetchN}&_t=${timestamp}&_r=${random}`;
 
           console.log('🔄 データ取得開始:', new Date().toLocaleTimeString());
 
@@ -315,7 +344,9 @@
               fullTime: new Date(item.created).toLocaleString('ja-JP')
             }));
 
-            setData([...formattedData]);
+            setPieData([...formattedData]);
+            const graphData = formattedData.slice(-dataRange);  // グラフ・表はプルダウンの件数だけ
+            setData([...graphData]);
             setLatestData({ ...formattedData[formattedData.length - 1] });
             const _now = new Date();
             setLastUpdate(_now);
@@ -323,7 +354,8 @@
             // 不揮発領域へ保存（次回起動時、Ambientが落ちていてもこれを表示する）
             try {
               localStorage.setItem(CACHE_KEY, JSON.stringify({
-                data: formattedData,
+                data: graphData,
+                pieData: formattedData,
                 latestData: formattedData[formattedData.length - 1],
                 lastSuccessTime: _now.toISOString()
               }));
@@ -453,7 +485,10 @@
       const deguStates = judgmentResult.states;
       const sensorDiffs = judgmentResult.diffs;
 
-      const stateOccupancy = data.length > 0 ? calculateStateOccupancy(data) : null;
+      const todayOcc = pieData.length > 0 ? calculateTodayOccupancy(pieData) : null;
+      const stateOccupancy = (todayOcc && todayOcc.count > 0) ? todayOcc.stateTimes : null;
+      const fmtHM = (min) => `${Math.floor(min / 60)}時間${Math.round(min % 60)}分`;
+      const fmtClock = (d) => d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
 
       return (
         <div key={updateKey} className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
@@ -496,16 +531,14 @@
                 </div>
                 <div className="text-right">
                   <div className="flex items-center justify-start md:justify-end gap-2 mb-2">
-                    <span className={`inline-block w-2.5 h-2.5 rounded-full ${
-                      serverStatus === 'active' ? 'bg-green-500' :
-                      serverStatus === 'error' ? 'bg-red-500' : 'bg-gray-400 animate-pulse'
-                    }`}></span>
-                    <span className={`text-sm font-semibold ${
-                      serverStatus === 'active' ? 'text-green-600' :
-                      serverStatus === 'error' ? 'text-red-600' : 'text-gray-500'
-                    }`}>
+                    <span className={`inline-block w-2.5 h-2.5 rounded-full ${serverStatus === 'active' ? 'bg-green-500' :
+                        serverStatus === 'error' ? 'bg-red-500' : 'bg-gray-400 animate-pulse'
+                      }`}></span>
+                    <span className={`text-sm font-semibold ${serverStatus === 'active' ? 'text-green-600' :
+                        serverStatus === 'error' ? 'text-red-600' : 'text-gray-500'
+                      }`}>
                       {serverStatus === 'active' ? 'データ取得中' :
-                       serverStatus === 'error' ? '接続エラー' : '状態を確認中...'}
+                        serverStatus === 'error' ? '接続エラー' : '状態を確認中...'}
                     </span>
                   </div>
                   <div className="text-sm text-gray-500 mb-2">
@@ -599,9 +632,15 @@
                 )}
               </div>
 
+              {todayOcc && todayOcc.count === 0 && (
+                <div className="bg-white rounded-lg shadow-lg p-6">
+                  <h2 className="text-xl font-bold mb-4 text-gray-800">🥧 状態別占有時間（本日 0:00〜）</h2>
+                  <div className="text-gray-500">本日のデータ待ち（0:00以降のレコードがまだありません）</div>
+                </div>
+              )}
               {stateOccupancy && (
                 <div className="bg-white rounded-lg shadow-lg p-6">
-                  <h2 className="text-xl font-bold mb-4 text-gray-800">🥧 状態別占有時間（集計期間：{data.length}件 ≈ {Math.round((data.length - 1) * 5 / 60)}時間）</h2>
+                  <h2 className="text-xl font-bold mb-4 text-gray-800">🥧 状態別占有時間（本日 0:00〜{fmtClock(todayOcc.end)}：{fmtHM(todayOcc.minutes)} / {todayOcc.count}件）</h2>
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <div>
                       <StateOccupancyPieChart stateOccupancy={stateOccupancy} />
